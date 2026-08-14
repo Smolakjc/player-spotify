@@ -902,7 +902,7 @@
                     }) => {
 
                         console.log(
-                            "PLAYER AVA PRONTO (v20):",
+                            "PLAYER AVA PRONTO (v21):",
                             device_id
                         );
 
@@ -2801,7 +2801,564 @@
 
 
         /* =========================================================
-           PLAYLISTS
+           PESQUISA NO SPOTIFY (/v1/search)
+        ========================================================= */
+
+        /*
+           NOVIDADE (v21):
+           A Web API do Spotify tem endpoint de
+           busca — /v1/search — que aceita token de
+           usuário. Não ficamos mais presos só às
+           playlists salvas: qualquer música, playlist
+           ou artista do Spotify pode ser pesquisado.
+
+           Tipo de resposta: "track" (música),
+           "playlist" (playlist pública) e "artist"
+           (artista, toca o top tracks dele).
+
+           Debounce: só busca 350ms após o usuário
+           parar de digitar (evita chamar a API a
+           cada letra).
+        */
+
+        let searchTimer = null;
+
+        async function searchTracks(query) {
+
+            const container =
+                document.getElementById(
+                    "sp-search-results"
+                );
+
+            if (!container)
+                return;
+
+            clearTimeout(searchTimer);
+
+            query = (query || "").trim();
+
+            if (query.length < 3) {
+
+                container.innerHTML = "";
+
+                return;
+
+            }
+
+
+            searchTimer =
+                setTimeout(
+                    async () => {
+
+                        container.innerHTML =
+                            '<div style="grid-column:1/-1;text-align:center;padding:14px;color:#777;">Buscando...</div>';
+
+
+                        const data =
+                            await spotifyAPI(
+                                "/search?q=" +
+                                encodeURIComponent(
+                                    query
+                                ) +
+                                "&type=track,playlist,artist" +
+                                "&limit=6"
+                            );
+
+
+                        if (
+                            !data ||
+                            (
+                                !data.tracks &&
+                                !data.playlists &&
+                                !data.artists
+                            )
+                        ) {
+
+                            container.innerHTML =
+                                '<div style="grid-column:1/-1;text-align:center;color:#777;">Nada encontrado.</div>';
+
+                            return;
+
+                        }
+
+
+                        container.innerHTML = "";
+
+
+                        const makeCard = (
+                            image,
+                            name,
+                            subtitle,
+                            typeLabel,
+                            onClick
+                        ) => {
+
+                            const card =
+                                document.createElement("div");
+
+                            card.style =
+                                "display:flex;align-items:center;" +
+                                "gap:10px;padding:8px;" +
+                                "background:#111;" +
+                                "border:1px solid #222;" +
+                                "border-radius:7px;" +
+                                "cursor:pointer;transition:.2s;" +
+                                "max-width:100%;";
+
+                            card.onmouseover =
+                                function() {
+
+                                    this.style.borderColor = "#1db954";
+
+                                    this.style.background = "#181818";
+
+                                    this.style.transform = "translateY(-2px)";
+
+                                };
+
+                            card.onmouseout =
+                                function() {
+
+                                    this.style.borderColor = "#222";
+
+                                    this.style.background = "#111";
+
+                                    this.style.transform = "translateY(0)";
+
+                                };
+
+                            card.onclick = onClick;
+
+                            card.innerHTML =
+                                '<img src="' +
+                                image +
+                                '" style="width:45px;height:45px;object-fit:cover;border-radius:' +
+                                (typeLabel === "ARTISTA" ? "23px" : "5px") +
+                                ";flex-shrink:0;" +
+                                '">' +
+                                '<span style="font-size:11px;color:#ccc;"' +
+                                ' title="' +
+                                escapeHTML(name) +
+                                '">' +
+                                '<span style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
+                                escapeHTML(name) +
+                                '</span>' +
+                                '<span style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#777;font-size:10px;">' +
+                                escapeHTML(subtitle) +
+                                '</span>' +
+                                '<span style="display:inline-block;margin-top:3px;font-size:8px;letter-spacing:1px;padding:1px 5px;border:1px solid #444;border-radius:4px;color:#999;">' +
+                                typeLabel +
+                                '</span>' +
+                                '</span>';
+
+                            container.appendChild(card);
+
+                        };
+
+
+                        const tracks =
+                            (data.tracks && data.tracks.items) || [];
+
+                        const playlists =
+                            (data.playlists && data.playlists.items) || [];
+
+                        const artists =
+                            (data.artists && data.artists.items) || [];
+
+
+                        tracks.forEach(
+                            track => {
+
+                                const image =
+                                    track.album &&
+                                    track.album.images &&
+                                    track.album.images.length
+
+                                    ?
+
+                                    track.album.images[0].url
+
+                                    :
+
+                                    "https://placehold.co/300x300/111/777?text=♫";
+
+
+                                makeCard(
+                                    image,
+                                    track.name,
+                                    track.artists
+                                        .map(a => a.name)
+                                        .join(", "),
+                                    "MÚSICA",
+                                    () =>
+                                        playTrackByUri(
+                                            track.uri,
+                                            track.name +
+                                            " — " +
+                                            track.artists.map(a => a.name).join(", ")
+                                        )
+                                );
+
+                            }
+                        );
+
+
+                        playlists.forEach(
+                            playlist => {
+
+                                const image =
+                                    playlist.images &&
+                                    playlist.images.length
+
+                                    ?
+
+                                    playlist.images[0].url
+
+                                    :
+
+                                    "https://placehold.co/300x300/111/777?text=♫";
+
+
+                                makeCard(
+                                    image,
+                                    playlist.name,
+                                    (playlist.owner ?
+                                    playlist.owner.display_name :
+                                    "") +
+                                    (playlist.tracks && playlist.tracks.total !== undefined ?
+                                    " • " + playlist.tracks.total + " músicas" :
+                                    ""),
+                                    "PLAYLIST",
+                                    () =>
+                                        playPlaylist(
+                                            playlist.id,
+                                            playlist.name,
+                                            false
+                                        )
+                                );
+
+                            }
+                        );
+
+
+                        artists.forEach(
+                            artist => {
+
+                                const image =
+                                    artist.images &&
+                                    artist.images.length
+
+                                    ?
+
+                                    artist.images[0].url
+
+                                    :
+
+                                    "https://placehold.co/300x300/111/777?text=♫";
+
+
+                                makeCard(
+                                    image,
+                                    artist.name,
+                                    (artist.genres && artist.genres.length ?
+                                    artist.genres.slice(0, 3).join(", ") :
+                                    ""),
+                                    "ARTISTA",
+                                    () =>
+                                        playArtistTop(
+                                            artist.id,
+                                            artist.name
+                                        )
+                                );
+
+                            }
+                        );
+
+
+                        if (
+                            !tracks.length &&
+                            !playlists.length &&
+                            !artists.length
+                        ) {
+
+                            container.innerHTML =
+                                '<div style="grid-column:1/-1;text-align:center;color:#777;">Nada encontrado.</div>';
+
+                        }
+
+                    },
+                    350
+                );
+
+        }
+
+
+        /*
+           Toca uma música única pelo URI (resultado
+           de busca de música). Usa start com uris —
+           o jeito oficial de tocar uma faixa
+           específica.
+        */
+
+        async function playTrackByUri(
+            uri,
+            name
+        ) {
+
+            if (
+                spotifyCommandRunning
+            )
+                return;
+
+
+            const token =
+                await getToken();
+
+            if (!token) {
+
+                alert("Faça login no Spotify primeiro.");
+
+                return;
+
+            }
+
+            if (
+                !spotifyDeviceId &&
+                !await waitUntilSpotifyReady()
+            )
+                return;
+
+
+            spotifyCommandRunning = true;
+
+            try {
+
+                const response =
+                    await fetch(
+                        "https://api.spotify.com/v1/me/player/play?device_id=" +
+                        encodeURIComponent(
+                            spotifyDeviceId
+                        ), {
+
+                            method: "PUT",
+
+                            headers: {
+
+                                Authorization: "Bearer " + token,
+
+                                "Content-Type": "application/json"
+
+                            },
+
+                            body: JSON.stringify({
+
+                                uris: [uri]
+
+                            })
+
+                        }
+                    );
+
+
+                if (
+                    !response.ok &&
+                    response.status !== 204
+                ) {
+
+                    console.error(
+                        "PLAY TRACK:",
+                        await response.text()
+                    );
+
+                    showStatus(
+                        "❌ Não foi possível tocar \"" +
+                        name + "\"."
+                    );
+
+                    return;
+
+                }
+
+
+                showStatus(
+                    "▶ Tocando: " + name
+                );
+
+                console.log(
+                    "SEARCH PLAY: tocando", uri
+                );
+
+            } finally {
+
+                setTimeout(
+                    () => {
+                        spotifyCommandRunning = false;
+                    },
+                    500
+                );
+
+            }
+
+        }
+
+
+        /*
+           Toca o top 10 do artista pesquisado
+           (via /artists/{id}/top-tracks).
+        */
+
+        async function playArtistTop(
+            artistId,
+            name
+        ) {
+
+            if (
+                spotifyCommandRunning
+            )
+                return;
+
+
+            const data =
+                await spotifyAPI(
+                    "/artists/" +
+                    encodeURIComponent(artistId) +
+                    "/top-tracks?market=BR"
+                );
+
+
+            if (
+                !data ||
+                !data.tracks ||
+                !data.tracks.length
+            ) {
+
+                showStatus("❌ Top tracks indisponível.");
+
+                return;
+
+            }
+
+
+            const uris =
+                data.tracks.map(t => t.uri);
+
+
+            await playUrisList(
+                uris,
+                "Top de " + name
+            );
+
+        }
+
+
+        /*
+           Toca uma lista de URIs pelo endpoint
+           oficial (play com uris) — usado pela busca.
+        */
+
+        async function playUrisList(
+            uris,
+            name
+        ) {
+
+            if (
+                spotifyCommandRunning
+            )
+                return;
+
+
+            const token =
+                await getToken();
+
+            if (!token) {
+
+                alert("Faça login no Spotify primeiro.");
+
+                return;
+
+            }
+
+            if (
+                !spotifyDeviceId &&
+                !await waitUntilSpotifyReady()
+            )
+                return;
+
+
+            spotifyCommandRunning = true;
+
+            try {
+
+                const response =
+                    await fetch(
+                        "https://api.spotify.com/v1/me/player/play?device_id=" +
+                        encodeURIComponent(
+                            spotifyDeviceId
+                        ), {
+
+                            method: "PUT",
+
+                            headers: {
+
+                                Authorization: "Bearer " + token,
+
+                                "Content-Type": "application/json"
+
+                            },
+
+                            body: JSON.stringify({
+
+                                uris: uris
+
+                            })
+
+                        }
+                    );
+
+
+                if (
+                    !response.ok &&
+                    response.status !== 204
+                ) {
+
+                    console.error(
+                        "PLAY URIS:",
+                        await response.text()
+                    );
+
+                    showStatus("❌ Não foi possível tocar.");
+
+                    return;
+
+                }
+
+
+                showStatus(
+                    "▶ " + name
+                );
+
+                console.log(
+                    "SEARCH PLAY:",
+                    uris.length + " faixas",
+                    "| " + name
+                );
+
+            } finally {
+
+                setTimeout(
+                    () => {
+                        spotifyCommandRunning = false;
+                    },
+                    500
+                );
+
+            }
+
+        }
+
+
+        /* =========================================================
+           PLAYLISTS DO USUÁRIO
         ========================================================= */
 
         async function loadPlaylists() {
@@ -3716,10 +4273,38 @@
         </div>
 
 
+                <!-- BUSCA -->
+        <div style="padding:0 22px 12px;" bis_skin_checked="1">
+            <div style="font-size: 11px; color: rgb(119, 119, 119); letter-spacing: 2px; margin-bottom: 8px; --darkreader-inline-color: var(--darkreader-text-777777, #9d9488);" data-darkreader-inline-color="" bis_skin_checked="1">
+                PESQUISAR NO SPOTIFY
+            </div>
+            <input
+                id="sp-search"
+                type="text"
+                placeholder="Música, playlist ou artista..."
+                oninput="searchTracks(this.value)"
+                style="
+                    width: 100%;
+                    padding: 10px 14px;
+                    background: #111;
+                    border: 1px solid #2a2a2a;
+                    border-radius: 10px;
+                    color: #fff;
+                    font-size: 13px;
+                    outline: none;
+                    box-sizing: border-box;
+                    transition: border-color .2s;
+                "
+                onfocus="this.style.borderColor='#1db954'"
+                onblur="this.style.borderColor='#2a2a2a'"
+            />
+            <div
+                id="sp-search-results"
+                style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-top:10px;"
+            ></div>
+        </div>
         <!-- PLAYLISTS -->
-
         <div style="padding:0 22px 22px;" bis_skin_checked="1">
-
             <div style="font-size: 11px; color: rgb(119, 119, 119); letter-spacing: 2px; margin-bottom: 10px; --darkreader-inline-color: var(--darkreader-text-777777, #9d9488);" data-darkreader-inline-color="" bis_skin_checked="1">
                 MINHAS PLAYLISTS
             </div>
