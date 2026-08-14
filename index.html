@@ -7,7 +7,7 @@
    CONFIGURAÇÃO
 ========================================================= */
 
-        const SPOTIFY_CLIENT_ID = "44c24d375063546ef82113244a19777dc";
+        const SPOTIFY_CLIENT_ID = "4c24d375063546ef82113244a19777dc";
 
         const SPOTIFY_REDIRECT_URI =
             "https://smolakjc.github.io/player-spotify/";
@@ -142,9 +142,181 @@
 
                 });
 
-            window.location.href =
+            const authUrl =
                 "https://accounts.spotify.com/authorize?" +
                 params.toString();
+
+
+            /*
+               RODADA FINAL: o Spotify proíbe (CSP
+               frame-ancestors) que a página de login
+               seja incorporada em iframe de outros
+               domínios. Dentro de um iframe no
+               Moodle, o redirecionamento da própria
+               página carrega o login DENTRO do
+               iframe → bloqueado.
+
+               SOLUÇÃO: dentro de iframe, abrir a
+               autorização numa NOVA janela que
+               nunca é bloqueada por CSP; a própria
+               página captura o código depois.
+            */
+
+            if (window.top !== window) {
+
+                /*
+                   RODADA FINAL: o Spotify proíbe
+                   (CSP frame-ancestors) que a
+                   página de login seja incorporada
+                   em iframe de outros domínios.
+
+                   SOLUÇÃO: dentro de iframe, abrir
+                   a autorização numa NOVA janela
+                   (nunca bloqueada por CSP).
+
+                   Quando o Spotify redireciona de
+                   volta, a URL da nova janela passa
+                   a ser da NOSSA origem — aí dá
+                   para ler o código (same-origin)
+                   e processar o login aqui mesmo,
+                   sem tocar na página do Moodle.
+                */
+
+                const popup = window.open(
+                    authUrl,
+                    "spotifyAuth",
+                    "width=560,height=680,left=" +
+                    ((window.screen.width - 560) / 2) +
+                    ",top=" +
+                    ((window.screen.height - 680) / 2)
+                );
+
+                if (!popup) {
+
+                    showStatus(
+                        "⚠ Pop-up bloqueado. Permita " +
+                        "pop-ups para este site ou " +
+                        "abra o player em nova aba."
+                    );
+
+                    return;
+
+                }
+
+
+                const tryCapture = () => {
+
+                    let popupUrl = "";
+
+                    try {
+
+                        /*
+                           cross-origin enquanto a
+                           janela está no Spotify;
+                           readable só após o
+                           redirect para nossa URL.
+                        */
+
+                        popupUrl =
+                            popup.location.href;
+
+                    } catch {
+
+                        /* ainda no Spotify — ok */
+                        return false;
+
+                    }
+
+                    if (
+                        popupUrl.startsWith(
+                            "https://smolakjc.github.io"
+                        ) &&
+                        popupUrl.includes("code=")
+                    ) {
+
+                        /*
+                           Voltou para nosso player
+                           com o código → captura a
+                           busca inteira e processa
+                           nesta página (mesmo
+                           localStorage do iframe).
+                        */
+
+                        const search =
+                            popupUrl.split("?")[1] ||
+                            "";
+
+                        if (
+                            window.location.search !==
+                            "?" + search
+                        ) {
+
+                            window.history.replaceState(
+                                {},
+                                "",
+                                "?" + search
+                            );
+
+                        }
+
+                        handleSpotifyCallback();
+
+                        try {
+                            popup.close();
+                        } catch {}
+
+                        return true;
+
+                    }
+
+                    return false;
+
+                };
+
+
+                /*
+                   Tenta capturar: (a) quando a
+                   janela focar, (b) periodicamente.
+                */
+
+                window.addEventListener(
+                    "focus",
+                    tryCapture
+                );
+
+                const poll = setInterval(() => {
+
+                    if (tryCapture()) {
+
+                        clearInterval(poll);
+
+                    }
+
+                    /*
+                       janela fechada sem login:
+                       para de monitorar depois de
+                       5 minutos.
+                    */
+
+                }, 800);
+
+
+                setTimeout(
+                    () => clearInterval(poll),
+                    5 * 60 * 1000
+                );
+
+                return;
+
+            }
+
+
+            /*
+               Modo normal (player em aba própria):
+               redireciona a própria página.
+            */
+
+            window.location.href = authUrl;
         }
 
 
@@ -755,7 +927,7 @@
                     }) => {
 
                         console.log(
-                            "PLAYER AVA PRONTO (v15):",
+                            "PLAYER AVA PRONTO (v16):",
                             device_id
                         );
 
