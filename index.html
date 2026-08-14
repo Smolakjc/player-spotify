@@ -746,28 +746,21 @@
 
 
         /* =========================================================
-           PUT COM CORPO JSON (ANTIDOTO DO PROXY DO AVA)
+           PUT DIRETO NA WEB API (RODA FORA DO AVA)
         ========================================================= */
 
         /*
-           DESCOBERTA (rodadas 10-14, logs do usuário):
+           PUT DIRETO NA WEB API DO SPOTIFY.
 
-           O ambiente do AVA intercepta as chamadas
-           do navegador para api.spotify.com:
-           - GET  → funciona (proxy do AVA replica);
-           - PUT  → engolido (200 falso, o comando
-                    nunca chega);
-           - POST com override → bloqueado por CORS.
+           O player agora roda no GitHub Pages
+           (fora do AVA) — então não há mais a
+           interceptação que engolia os PUTs.
 
-           ROTAS TENTADAS PELO spotifyPUT (nesta ordem):
-           1. spotify_proxy.php (proxy PHP no mesmo
-              servidor — só se o usuário/admin
-              instalar o arquivo);
-           2. PUT direto na API do Spotify — se o
-              proxy devolver 404 (não instalado).
-              Pode ser engolido pelo AVA, mas o
-              código registra corretamente em vez
-              de confundir 404 com sucesso.
+           (O proxy spotify_proxy.php foi removido:
+           o GitHub Pages é estático e NÃO executa
+           PHP — o arquivo era só para o AVA, onde
+           o PUT direto era engolido. No GitHub
+           Pages o PUT direto chega ao Spotify.)
         */
 
         async function spotifyPUT(
@@ -781,88 +774,22 @@
             if (!token)
                 return null;
 
-            /*
-               ROTA PRINCIPAL: proxy local
-               spotify_proxy.php (mesmo servidor).
-               O proxy faz o PUT real ao Spotify
-               pelo servidor (curl), sem CORS e
-               sem a interferência do AVA.
-            */
+            const response =
+                await fetch(
+                    "https://api.spotify.com/v1" +
+                    endpoint, {
 
-            let response;
-
-            let route = "";
-
-
-            /*
-               ROTA 1: proxy PHP local (spotify_proxy.
-               php no mesmo servidor). Só funciona se
-               o arquivo foi instalado — se devolver
-               404, cai para a rota 2.
-            */
-
-            const proxyUrl =
-                "spotify_proxy.php?e=" +
-                encodeURIComponent(endpoint);
-
-            try {
-
-                response =
-                    await fetch(proxyUrl, {
-
-                        method: "POST",
+                        method: "PUT",
 
                         headers: {
-                            "Content-Type": "application/json",
-                            "X-Spotify-Token": "Bearer " + token,
-                            "X-Spotify-Method": "PUT"
+                            Authorization: "Bearer " + token,
+                            "Content-Type": "application/json"
                         },
 
                         body: JSON.stringify(body)
 
-                    });
-
-                route = "proxy";
-
-            } catch {
-
-                response = null;
-
-            }
-
-
-            /*
-               ROTA 2: PUT direto na API do Spotify.
-               Ativa quando o proxy devolve 404
-               (arquivo não instalado).
-            */
-
-            if (
-                response === null ||
-                response.status === 404
-            ) {
-
-                response =
-                    await fetch(
-                        "https://api.spotify.com/v1" +
-                        endpoint, {
-
-                            method: "PUT",
-
-                            headers: {
-                                Authorization: "Bearer " + token,
-                                "Content-Type": "application/json"
-                            },
-
-                            body: JSON.stringify(body)
-
-                        }
-                    );
-
-                route = "direto";
-
-            }
-
+                    }
+                );
 
             if (response.status === 401) {
 
@@ -878,12 +805,10 @@
                 );
             }
 
-
             if (!response.ok) {
 
                 console.error(
                     "SPOTIFY PUT:",
-                    "[" + route + "]",
                     response.status,
                     response.statusText,
                     "|",
@@ -893,50 +818,39 @@
                 return null;
             }
 
-
             const text =
                 await response.text();
 
-
             /*
                Sucesso real do Spotify: 204 (sem corpo)
-               ou JSON válido. Na rota direta, corpo
-               estranho (token base64 do AVA) significa
-               que o proxy do AVA engoliu o PUT —
-               retorna null para o comando NÃO ser
-               dado como enviado.
+               ou JSON válido. Corpo vazio = comando
+               executado com sucesso.
             */
 
             if (!text || !text.trim())
                 return {};
 
-
             try {
 
                 JSON.parse(text);
 
-                console.log(
-                    "SPOTIFY PUT: comando entregue",
-                    "[" + route + "]"
-                );
-
-                return {};
-
             } catch {
 
-                console.error(
-                    "SPOTIFY PUT: resposta estranha",
-                    "[" + route + "]",
-                    "(proxy do AVA engoliu o PUT)",
+                console.log(
+                    "SPOTIFY PUT: resposta não-JSON",
                     "| status:",
                     response.status,
                     "| corpo:",
                     text.slice(0, 40)
                 );
 
-                return null;
-
             }
+
+            console.log(
+                "SPOTIFY PUT: comando entregue ✓"
+            );
+
+            return {};
 
         }
 
@@ -988,7 +902,7 @@
                     }) => {
 
                         console.log(
-                            "PLAYER AVA PRONTO (v19):",
+                            "PLAYER AVA PRONTO (v20):",
                             device_id
                         );
 
@@ -1614,6 +1528,18 @@
                    estado do SDK (ms).
                 */
 
+                /*
+                   1. Estado atual (shuffle, pausa e
+                      duração) via estado do SDK —
+                      sem API. A declaração vem
+                      ANTES do cálculo do seek,
+                      porque a duração real é usada
+                      para converter o percent em ms.
+                */
+
+                const sdkState =
+                    spotifyPlayer._state || {};
+
                 const duration =
                     sdkState.duration || 0;
 
@@ -1625,15 +1551,6 @@
                     Math.round(
                         percent * 1000
                     );
-
-
-                /*
-                   1. Estado atual (shuffle e pausa)
-                      via estado do SDK — sem API.
-                */
-
-                const sdkState =
-                    spotifyPlayer._state || {};
 
                 const shuffleWasOn =
                     sdkState.shuffle === true;
