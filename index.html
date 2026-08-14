@@ -204,7 +204,22 @@
                 }
 
 
+                /*
+                   GARDA: captura só UMA vez.
+                   O poll roda a cada 800ms e o
+                   evento focus também chama
+                   tryCapture — sem a guarda, o
+                   mesmo código gera 2 chamadas
+                   do token e a 2ª retorna 400
+                   "code already used".
+                */
+
+                let captured = false;
+
                 const tryCapture = () => {
+
+                    if (captured)
+                        return false;
 
                     let popupUrl = "";
 
@@ -258,6 +273,10 @@
                             );
 
                         }
+
+                        captured = true;
+
+                        clearInterval(poll);
 
                         handleSpotifyCallback();
 
@@ -411,8 +430,50 @@
 
                     console.error(data);
 
+                    /*
+                       CORRIGIDO (rodada final):
+                       Dentro do iframe, o fluxo de
+                       login usa popup. A captura do
+                       código pode disparar 2 vezes
+                       (evento focus + poll), e a
+                       2ª tentativa do Spotify
+                       retorna 400 "code already
+                       used" — mas a 1ª já salvou
+                       o token com sucesso.
+
+                       Se já temos um access token
+                       salvo, limpamos a URL e
+                       seguimos normal em vez de
+                       mostrar erro falso.
+                    */
+
+                    if (
+                        localStorage.getItem(
+                            "sp_access_token"
+                        )
+                    ) {
+
+                        window.history.replaceState(
+                            {},
+                            "",
+                            window.location.pathname
+                        );
+
+                        showStatus(
+                            "✓ Login concluído."
+                        );
+
+                        loadDashboard();
+
+                        return;
+                    }
+
                     showStatus(
-                        "❌ Erro ao obter token."
+                        "❌ Erro ao obter token. " +
+                        (data && data.error ?
+                        "(" + data.error + ")" :
+                        "") +
+                        " Tente reconectar."
                     );
 
                     return;
@@ -927,7 +988,7 @@
                     }) => {
 
                         console.log(
-                            "PLAYER AVA PRONTO (v17):",
+                            "PLAYER AVA PRONTO (v18):",
                             device_id
                         );
 
@@ -3506,31 +3567,55 @@
                     "sp-login"
                 );
 
-
             const dashboard =
                 document.getElementById(
                     "sp-dashboard"
                 );
 
 
+            /*
+               CORRIGIDO: se loadDashboard() for
+               chamado antes do DOM estar pronto
+               (ex.: callback do login logo após o
+               redirect), os elementos ainda são
+               null → "Cannot read properties of
+               null (reading 'style')".
+
+               Agora: espera o DOM antes de mexer
+               na interface.
+            */
+
+            if (document.readyState !== "complete") {
+
+                await new Promise(resolve =>
+                    window.addEventListener(
+                        "load",
+                        resolve,
+                        { once: true }
+                    )
+                );
+
+            }
+
+
             if (!token) {
 
-                login.style.display =
-                    "block";
+                if (login)
+                    login.style.display = "block";
 
-                dashboard.style.display =
-                    "none";
+                if (dashboard)
+                    dashboard.style.display = "none";
 
                 return;
 
             }
 
 
-            login.style.display =
-                "none";
+            if (login)
+                login.style.display = "none";
 
-            dashboard.style.display =
-                "block";
+            if (dashboard)
+                dashboard.style.display = "block";
 
 
             await loadProfile();
@@ -3542,11 +3627,23 @@
         }
 
 
-        /* =========================================================
+                /* =========================================================
            INICIALIZAÇÃO
         ========================================================= */
 
-        handleSpotifyCallback();
+        /*
+           Só processa o callback se a URL realmente
+           voltou do Spotify com o código (senão o
+           init chamava loadDashboard duas vezes).
+        */
+
+        if (
+            window.location.search.includes("code=")
+        ) {
+
+            handleSpotifyCallback();
+
+        }
     </script>
 
 
