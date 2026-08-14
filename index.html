@@ -3006,6 +3006,13 @@
                         playlists.forEach(
                             playlist => {
 
+                                if (
+                                    !playlist ||
+                                    !playlist.id
+                                )
+                                    return;
+
+
                                 const image =
                                     playlist.images &&
                                     playlist.images.length
@@ -3041,9 +3048,19 @@
                                            ou usa os botões ▶ / 🔀.
                                         */
 
-                                        searchResultsContainer.innerHTML = "";
+                                        container.innerHTML = "";
 
-                                        searchInput.value = "";
+                                        clearTimeout(
+                                            searchTimer
+                                        );
+
+                                        const searchField =
+                                            document.getElementById(
+                                                "sp-search"
+                                            );
+
+                                        if (searchField)
+                                            searchField.value = "";
 
                                         loadPlaylistTracks(
                                             playlist.id,
@@ -3060,6 +3077,13 @@
 
                         artists.forEach(
                             artist => {
+
+                                if (
+                                    !artist ||
+                                    !artist.id
+                                )
+                                    return;
+
 
                                 const image =
                                     artist.images &&
