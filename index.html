@@ -1,0 +1,3386 @@
+<div style="width: 100%; max-width: 850px; margin: 20px auto; padding: 10px; background: rgb(8, 8, 8); border: 1px solid rgb(48, 48, 48); border-radius: 14px; box-shadow: rgba(0, 0, 0, 0.65) 0px 10px 35px; font-family: Arial, Helvetica, sans-serif; color: rgb(238, 238, 238); box-sizing: border-box; --darkreader-inline-bgimage: initial; --darkreader-inline-bgcolor: var(--darkreader-background-080808, #060707); --darkreader-inline-border-top: var(--darkreader-border-303030, #7c7366); --darkreader-inline-border-right: var(--darkreader-border-303030, #7c7366); --darkreader-inline-border-bottom: var(--darkreader-border-303030, #7c7366); --darkreader-inline-border-left: var(--darkreader-border-303030, #7c7366); --darkreader-inline-boxshadow: var(--darkreader-background-000000a6, rgba(0, 0, 0, 0.65)) 0px 10px 35px; --darkreader-inline-color: var(--darkreader-text-eeeeee, #dddad6);" data-darkreader-inline-bgimage="" data-darkreader-inline-bgcolor="" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="" data-darkreader-inline-boxshadow="" data-darkreader-inline-color="" bis_skin_checked="1">
+
+    <script src="https://sdk.scdn.co/spotify-player.js"></script>
+
+    <script>
+        /* =========================================================
+   CONFIGURAÇÃO
+========================================================= */
+
+        const SPOTIFY_CLIENT_ID = "4Segredo";
+
+        const SPOTIFY_REDIRECT_URI =
+            "https://virtual.ifro.edu.br/vilhena/my/index.php";
+
+        /*
+           CORREÇÃO CRÍTICA:
+
+           O scope "streaming" é OBRIGATÓRIO para o Web
+           Playback SDK reproduzir áudio.
+
+           Sem ele o SDK retorna "Invalid token scopes"
+           (linha SDK AUTH do console) e os pedidos de
+           licença do áudio dão 403 — a música toca por
+           ~10 segundos e para.
+
+           IMPORTANTE: mudar o scope aqui NÃO basta.
+           Você PRECISA conectar novamente ao Spotify
+           (clicar em CONECTAR AO SPOTIFY) para receber
+           um token com os novos scopes.
+        */
+
+        const SPOTIFY_SCOPES =
+            "streaming " +
+            "user-read-private " +
+            "user-read-email " +
+            "user-read-currently-playing " +
+            "user-read-playback-state " +
+            "user-modify-playback-state " +
+            "playlist-read-private " +
+            "playlist-read-collaborative";
+
+
+        /* =========================================================
+           VARIÁVEIS
+        ========================================================= */
+
+        let spotifyPlayer = null;
+        let spotifyDeviceId = null;
+
+        let currentPlaylistId = null;
+        let currentPlaylistName = null;
+
+        let spotifyCommandRunning = false;
+
+
+        /* =========================================================
+           PKCE
+        ========================================================= */
+
+        function randomString(length) {
+
+            const chars =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+            let result = "";
+
+            for (let i = 0; i < length; i++) {
+
+                result += chars.charAt(
+                    Math.floor(Math.random() * chars.length)
+                );
+
+            }
+
+            return result;
+        }
+
+
+        async function generateCodeChallenge(verifier) {
+
+            const data =
+                new TextEncoder().encode(verifier);
+
+            const digest =
+                await crypto.subtle.digest(
+                    "SHA-256",
+                    data
+                );
+
+            return btoa(
+                    String.fromCharCode(
+                        ...new Uint8Array(digest)
+                    )
+                )
+                .replace(/\+/g, "-")
+                .replace(/\//g, "_")
+                .replace(/=+$/, "");
+        }
+
+
+        /* =========================================================
+           LOGIN
+        ========================================================= */
+
+        async function spotifyLogin() {
+
+            const verifier =
+                randomString(128);
+
+            const challenge =
+                await generateCodeChallenge(verifier);
+
+            const state =
+                randomString(32);
+
+            localStorage.setItem(
+                "sp_verifier",
+                verifier
+            );
+
+            localStorage.setItem(
+                "sp_state",
+                state
+            );
+
+            const params =
+                new URLSearchParams({
+
+                    client_id: SPOTIFY_CLIENT_ID,
+
+                    response_type: "code",
+
+                    redirect_uri: SPOTIFY_REDIRECT_URI,
+
+                    scope: SPOTIFY_SCOPES,
+
+                    state: state,
+
+                    code_challenge_method: "S256",
+
+                    code_challenge: challenge
+
+                });
+
+            window.location.href =
+                "https://accounts.spotify.com/authorize?" +
+                params.toString();
+        }
+
+
+        /* =========================================================
+           CALLBACK
+        ========================================================= */
+
+        async function handleSpotifyCallback() {
+
+            const params =
+                new URLSearchParams(
+                    window.location.search
+                );
+
+            const code =
+                params.get("code");
+
+            const state =
+                params.get("state");
+
+            const error =
+                params.get("error");
+
+            if (error) {
+
+                showStatus(
+                    "❌ Autorização cancelada."
+                );
+
+                return;
+            }
+
+            if (!code) {
+
+                loadDashboard();
+
+                return;
+            }
+
+            const savedState =
+                localStorage.getItem(
+                    "sp_state"
+                );
+
+            if (state !== savedState) {
+
+                showStatus(
+                    "❌ Erro de segurança no login."
+                );
+
+                return;
+            }
+
+            const verifier =
+                localStorage.getItem(
+                    "sp_verifier"
+                );
+
+            try {
+
+                const response =
+                    await fetch(
+                        "https://accounts.spotify.com/api/token", {
+
+                            method: "POST",
+
+                            headers: {
+                                "Content-Type": "application/x-www-form-urlencoded"
+                            },
+
+                            body: new URLSearchParams({
+
+                                client_id: SPOTIFY_CLIENT_ID,
+
+                                grant_type: "authorization_code",
+
+                                code: code,
+
+                                redirect_uri: SPOTIFY_REDIRECT_URI,
+
+                                code_verifier: verifier
+
+                            })
+
+                        }
+                    );
+
+                const data =
+                    await response.json();
+
+                if (!response.ok) {
+
+                    console.error(data);
+
+                    showStatus(
+                        "❌ Erro ao obter token."
+                    );
+
+                    return;
+                }
+
+                saveTokens(data);
+
+                localStorage.removeItem(
+                    "sp_verifier"
+                );
+
+                localStorage.removeItem(
+                    "sp_state"
+                );
+
+                window.history.replaceState({},
+                    document.title,
+                    window.location.pathname
+                );
+
+                loadDashboard();
+
+            } catch (error) {
+
+                console.error(error);
+
+                showStatus(
+                    "❌ Erro de conexão."
+                );
+
+            }
+        }
+
+
+        /* =========================================================
+           TOKENS
+        ========================================================= */
+
+        function saveTokens(data) {
+
+            localStorage.setItem(
+                "sp_access_token",
+                data.access_token
+            );
+
+            localStorage.setItem(
+                "sp_expires_at",
+                Date.now() +
+                data.expires_in * 1000
+            );
+
+            if (data.refresh_token) {
+
+                localStorage.setItem(
+                    "sp_refresh_token",
+                    data.refresh_token
+                );
+
+            }
+        }
+
+
+        async function refreshSpotifyToken() {
+
+            const refreshToken =
+                localStorage.getItem(
+                    "sp_refresh_token"
+                );
+
+            if (!refreshToken)
+                return false;
+
+            try {
+
+                const response =
+                    await fetch(
+                        "https://accounts.spotify.com/api/token", {
+
+                            method: "POST",
+
+                            headers: {
+                                "Content-Type": "application/x-www-form-urlencoded"
+                            },
+
+                            body: new URLSearchParams({
+
+                                client_id: SPOTIFY_CLIENT_ID,
+
+                                grant_type: "refresh_token",
+
+                                refresh_token: refreshToken
+
+                            })
+
+                        }
+                    );
+
+                const data =
+                    await response.json();
+
+                if (!response.ok)
+                    return false;
+
+                saveTokens(data);
+
+                return true;
+
+            } catch {
+
+                return false;
+
+            }
+        }
+
+
+        async function getToken() {
+
+            let token =
+                localStorage.getItem(
+                    "sp_access_token"
+                );
+
+            const expires =
+                Number(
+                    localStorage.getItem(
+                        "sp_expires_at"
+                    )
+                );
+
+            if (
+                !token ||
+                Date.now() > expires - 60000
+            ) {
+
+                const refreshed =
+                    await refreshSpotifyToken();
+
+                if (!refreshed)
+                    return null;
+
+                token =
+                    localStorage.getItem(
+                        "sp_access_token"
+                    );
+            }
+
+            return token;
+        }
+
+
+        /* =========================================================
+           API
+        ========================================================= */
+
+        async function spotifyAPI(
+            endpoint,
+            options = {}
+        ) {
+
+            const token =
+                await getToken();
+
+            if (!token)
+                return null;
+
+            const response =
+                await fetch(
+                    "https://api.spotify.com/v1" +
+                    endpoint, {
+
+                        ...options,
+
+                        headers: {
+
+                            ...(options.headers || {}),
+
+                            Authorization: "Bearer " + token
+
+                        }
+
+                    }
+                );
+
+            if (response.status === 401) {
+
+                const refreshed =
+                    await refreshSpotifyToken();
+
+                if (!refreshed)
+                    return null;
+
+                return spotifyAPI(
+                    endpoint,
+                    options
+                );
+            }
+
+            /*
+               CORREÇÃO CRÍTICA (rodada 9):
+
+               Antes, o código tentava
+               response.json() em TODA resposta,
+               mas os endpoints PUT (shuffle,
+               seek) retornam "204 No Content"
+               — corpo VAZIO — e JSON.parse de
+               string vazia dispara:
+               "Unexpected token ... is not valid JSON"
+
+               Esse erro derrubava o seek e o
+               toggle de shuffle sem nenhuma
+               mensagem clara no console.
+
+               Agora: lê o corpo como texto e só
+               faz parse quando houver conteúdo.
+            */
+
+            if (!response.ok) {
+
+                console.error(
+                    "Spotify API:",
+                    response.status,
+                    response.statusText
+                );
+
+                return null;
+            }
+
+
+            const body =
+                await response.text();
+
+
+            /*
+               Corpo vazio (204 ou similar) =
+               comando executado com sucesso,
+               sem dados para devolver.
+            */
+
+            if (!body || !body.trim())
+                return {};
+
+
+            try {
+
+                return JSON.parse(body);
+
+            } catch {
+
+                /*
+                   Corpo não é JSON válido
+                   (ex.: HTML de erro) —
+                   trata como sucesso vazio,
+                   mas registra para
+                   diagnóstico.
+                */
+
+                console.log(
+                    "Spotify API: resposta não-JSON",
+                    "| status:",
+                    response.status,
+                    "| início do corpo:",
+                    body.slice(0, 40)
+                );
+
+                return {};
+
+            }
+
+        }
+
+
+        /* =========================================================
+           PUT COM CORPO JSON (ANTIDOTO DO PROXY DO AVA)
+        ========================================================= */
+
+        /*
+           DESCOBERTA (rodadas 10-14, logs do usuário):
+
+           O ambiente do AVA intercepta as chamadas
+           do navegador para api.spotify.com:
+           - GET  → funciona (proxy do AVA replica);
+           - PUT  → engolido (200 falso, o comando
+                    nunca chega);
+           - POST com override → bloqueado por CORS.
+
+           ROTAS TENTADAS PELO spotifyPUT (nesta ordem):
+           1. spotify_proxy.php (proxy PHP no mesmo
+              servidor — só se o usuário/admin
+              instalar o arquivo);
+           2. PUT direto na API do Spotify — se o
+              proxy devolver 404 (não instalado).
+              Pode ser engolido pelo AVA, mas o
+              código registra corretamente em vez
+              de confundir 404 com sucesso.
+        */
+
+        async function spotifyPUT(
+            endpoint,
+            body = {}
+        ) {
+
+            const token =
+                await getToken();
+
+            if (!token)
+                return null;
+
+            /*
+               ROTA PRINCIPAL: proxy local
+               spotify_proxy.php (mesmo servidor).
+               O proxy faz o PUT real ao Spotify
+               pelo servidor (curl), sem CORS e
+               sem a interferência do AVA.
+            */
+
+            let response;
+
+            let route = "";
+
+
+            /*
+               ROTA 1: proxy PHP local (spotify_proxy.
+               php no mesmo servidor). Só funciona se
+               o arquivo foi instalado — se devolver
+               404, cai para a rota 2.
+            */
+
+            const proxyUrl =
+                "spotify_proxy.php?e=" +
+                encodeURIComponent(endpoint);
+
+            try {
+
+                response =
+                    await fetch(proxyUrl, {
+
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type": "application/json",
+                            "X-Spotify-Token": "Bearer " + token,
+                            "X-Spotify-Method": "PUT"
+                        },
+
+                        body: JSON.stringify(body)
+
+                    });
+
+                route = "proxy";
+
+            } catch {
+
+                response = null;
+
+            }
+
+
+            /*
+               ROTA 2: PUT direto na API do Spotify.
+               Ativa quando o proxy devolve 404
+               (arquivo não instalado).
+            */
+
+            if (
+                response === null ||
+                response.status === 404
+            ) {
+
+                response =
+                    await fetch(
+                        "https://api.spotify.com/v1" +
+                        endpoint, {
+
+                            method: "PUT",
+
+                            headers: {
+                                Authorization: "Bearer " + token,
+                                "Content-Type": "application/json"
+                            },
+
+                            body: JSON.stringify(body)
+
+                        }
+                    );
+
+                route = "direto";
+
+            }
+
+
+            if (response.status === 401) {
+
+                const refreshed =
+                    await refreshSpotifyToken();
+
+                if (!refreshed)
+                    return null;
+
+                return spotifyPUT(
+                    endpoint,
+                    body
+                );
+            }
+
+
+            if (!response.ok) {
+
+                console.error(
+                    "SPOTIFY PUT:",
+                    "[" + route + "]",
+                    response.status,
+                    response.statusText,
+                    "|",
+                    await response.text()
+                );
+
+                return null;
+            }
+
+
+            const text =
+                await response.text();
+
+
+            /*
+               Sucesso real do Spotify: 204 (sem corpo)
+               ou JSON válido. Na rota direta, corpo
+               estranho (token base64 do AVA) significa
+               que o proxy do AVA engoliu o PUT —
+               retorna null para o comando NÃO ser
+               dado como enviado.
+            */
+
+            if (!text || !text.trim())
+                return {};
+
+
+            try {
+
+                JSON.parse(text);
+
+                console.log(
+                    "SPOTIFY PUT: comando entregue",
+                    "[" + route + "]"
+                );
+
+                return {};
+
+            } catch {
+
+                console.error(
+                    "SPOTIFY PUT: resposta estranha",
+                    "[" + route + "]",
+                    "(proxy do AVA engoliu o PUT)",
+                    "| status:",
+                    response.status,
+                    "| corpo:",
+                    text.slice(0, 40)
+                );
+
+                return null;
+
+            }
+
+        }
+
+
+        /* =========================================================
+           WEB PLAYBACK SDK
+        ========================================================= */
+
+        window.onSpotifyWebPlaybackSDKReady =
+            async function() {
+
+                const token =
+                    await getToken();
+
+                if (!token)
+                    return;
+
+                if (spotifyPlayer)
+                    return;
+
+                spotifyPlayer =
+                    new Spotify.Player({
+
+                        name: "AVA Spotify Player",
+
+                        getOAuthToken: callback => {
+
+                            getToken()
+                                .then(token => {
+
+                                    if (token)
+                                        callback(token);
+
+                                });
+
+                        },
+
+                        volume: 0.7
+
+                    });
+
+
+                /* PLAYER PRONTO */
+
+                spotifyPlayer.addListener(
+                    "ready",
+                    async ({
+                        device_id
+                    }) => {
+
+                        console.log(
+                            "PLAYER AVA PRONTO (v15):",
+                            device_id
+                        );
+
+                        spotifyDeviceId =
+                            device_id;
+
+                        document.getElementById(
+                                "sp-device"
+                            ).innerHTML =
+                            "● AVA Player conectado";
+
+                        /*
+                           NÃO inicia reprodução aqui.
+
+                           Isso é importante.
+
+                           Antes o player era transferido
+                           automaticamente e podia recuperar
+                           o contexto anterior do Spotify.
+                        */
+
+                    }
+                );
+
+
+                spotifyPlayer.addListener(
+                    "not_ready",
+                    ({
+                        device_id
+                    }) => {
+
+                        console.log(
+                            "PLAYER OFFLINE:",
+                            device_id
+                        );
+
+                        spotifyDeviceId = null;
+
+                    }
+                );
+
+
+                spotifyPlayer.addListener(
+                    "player_state_changed",
+                    state => {
+
+                        if (!state)
+                            return;
+
+
+                        /*
+                           Guarda o estado mais recente
+                           do player para consultas
+                           internas (ex.: seek).
+                        */
+
+                        spotifyPlayer._state = state;
+
+
+                        updatePlayerState(state);
+
+                    }
+                );
+
+
+                spotifyPlayer.addListener(
+                    "initialization_error",
+                    ({
+                        message
+                    }) => {
+
+                        console.error(
+                            "SDK INIT:",
+                            message
+                        );
+
+                    }
+                );
+
+
+                spotifyPlayer.addListener(
+                    "authentication_error",
+                    ({
+                        message
+                    }) => {
+
+                        console.error(
+                            "SDK AUTH:",
+                            message
+                        );
+
+                    }
+                );
+
+
+                spotifyPlayer.addListener(
+                    "account_error",
+                    ({
+                        message
+                    }) => {
+
+                        console.error(
+                            "SDK ACCOUNT:",
+                            message
+                        );
+
+                        document.getElementById(
+                                "sp-device"
+                            ).innerHTML =
+                            "⚠ Spotify Premium necessário";
+
+                    }
+                );
+
+
+                spotifyPlayer.addListener(
+                    "playback_error",
+                    ({
+                        message
+                    }) => {
+
+                        console.error(
+                            "SDK PLAYBACK:",
+                            message
+                        );
+
+                    }
+                );
+
+
+                spotifyPlayer.addListener(
+                    "autoplay_failed",
+                    () => {
+
+                        console.warn(
+                            "Spotify bloqueou autoplay."
+                        );
+
+                    }
+                );
+
+
+                spotifyPlayer.connect();
+
+            };
+
+
+        /* =========================================================
+           ATIVAR PLAYER
+        ========================================================= */
+
+        async function activateSpotifyPlayer() {
+
+            if (!spotifyPlayer)
+                return false;
+
+            try {
+
+                if (
+                    spotifyPlayer.activateElement
+                ) {
+
+                    await spotifyPlayer.activateElement();
+
+                }
+
+                return true;
+
+            } catch (error) {
+
+                console.error(
+                    "ACTIVATE PLAYER:",
+                    error
+                );
+
+                return false;
+
+            }
+        }
+
+
+        /* =========================================================
+           TRANSFERIR PLAYER
+        ========================================================= */
+
+        async function ensureSpotifyDevice() {
+
+            if (!spotifyDeviceId)
+                return false;
+
+            const token =
+                await getToken();
+
+            if (!token)
+                return false;
+
+
+            /*
+               CORREÇÃO DA TRANSFERÊNCIA.
+
+               Antes: o player era transferido UMA VEZ
+               e nunca mais verificado (spotifyTransferDone).
+
+               Se o usuário tinha aberto o app do Spotify
+               em outro aparelho depois, os comandos de
+               PLAY iam para um dispositivo que já não era
+               o ativo — gerando comportamento estranho
+               (várias músicas "pulando" na interface).
+
+               Agora: verifica SEMPRE qual dispositivo
+               está tocando e espera até o AVA ser o ativo.
+            */
+
+            try {
+
+                const response =
+                    await fetch(
+                        "https://api.spotify.com/v1/me/player", {
+
+                            method: "PUT",
+
+                            headers: {
+
+                                Authorization: "Bearer " + token,
+
+                                "Content-Type": "application/json"
+
+                            },
+
+                            body: JSON.stringify({
+
+                                device_ids: [
+                                    spotifyDeviceId
+                                ],
+
+                                play: false
+
+                            })
+
+                        }
+                    );
+
+                if (
+                    response.ok ||
+                    response.status === 204
+                ) {
+
+                    /*
+                       Tenta confirmar que o AVA virou
+                       o dispositivo ativo, mas SEM
+                       bloquear: se o poll falhar
+                       (Spotify demora a reportar),
+                       ainda assim seguimos com o PLAY.
+                    */
+
+                    const confirmed =
+                        await waitForActiveDevice();
+
+                    if (!confirmed) {
+
+                        console.warn(
+                            "TRANSFER: player não confirmou, seguimos mesmo assim."
+                        );
+
+                    }
+
+                    return true;
+
+                }
+
+                console.error(
+                    "TRANSFER:",
+                    await response.text()
+                );
+
+                return false;
+
+            } catch (error) {
+
+                console.error(
+                    "TRANSFER ERROR:",
+                    error
+                );
+
+                return false;
+
+            }
+        }
+
+
+        /*
+           NOVO:
+           Espera até o dispositivo do AVA aparecer como
+           o dispositivo ATIVO em /me/player.
+
+           Se em 6 segundos não ativar, desiste e avisa
+           (para não mandar PLAY para o dispositivo
+           errado).
+        */
+
+        async function waitForActiveDevice() {
+
+            /*
+               CORREÇÃO (rate limit 429):
+               O poll a cada 500ms encher o Spotify de
+               pedidos /me/player gerou 429 (rate limit)
+               no seu console — o que atrapalhava a
+               transferência do player.
+
+               Agora consultamos só 2 vezes, com 1,5s
+               de intervalo. Menos consultas, menos
+               risco de rate limit.
+            */
+
+            const maxChecks = 2;
+
+            const interval = 1500;
+
+            let checks = 0;
+
+
+            while (checks < maxChecks) {
+
+                checks++;
+
+
+                try {
+
+                    const state =
+                        await spotifyAPI(
+                            "/me/player"
+                        );
+
+
+                    if (
+                        state &&
+                        state.device &&
+                        state.device.id === spotifyDeviceId
+                    ) {
+
+                        return true;
+
+                    }
+
+
+                } catch (error) {
+
+                    console.error(
+                        "WAIT DEVICE:",
+                        error
+                    );
+
+                }
+
+
+                await wait(interval);
+
+            }
+
+
+            console.warn(
+                "DEVICE AVA NÃO ATIVOU A TEMPO."
+            );
+
+            /*
+               Não usamos alert aqui: o Spotify às vezes
+               demora alguns segundos a mais para
+               reportar o dispositivo ativo, mas o PLAY
+               ainda funciona. Não travamos o usuário.
+            */
+
+            return false;
+
+        }
+
+
+        /* =========================================================
+           FORMATA TEMPO (ms → 3:45)
+        ========================================================= */
+
+        function formatTime(ms) {
+
+            if (
+                !ms ||
+                isNaN(ms)
+            )
+                return "--:--";
+
+
+            const total =
+                Math.floor(ms / 1000);
+
+            const minutes =
+                Math.floor(total / 60);
+
+            const seconds =
+                total % 60;
+
+            return minutes +
+                ":" +
+                (seconds < 10 ? "0" : "") +
+                seconds;
+
+        }
+
+
+        /* =========================================================
+           BARRA DE PROGRESSO (CLICÁVEL)
+        ========================================================= */
+
+        async function seekToPosition(
+            event
+        ) {
+
+            if (
+                !spotifyPlayer ||
+                !spotifyDeviceId
+            )
+                return;
+
+            if (spotifyCommandRunning)
+                return;
+
+
+            const bar =
+                document.getElementById(
+                    "sp-progress-bar"
+                );
+
+            if (!bar)
+                return;
+
+
+            const rect =
+                bar.getBoundingClientRect();
+
+            const percent =
+                Math.min(
+                    1,
+                    Math.max(
+                        0,
+                        (event.clientX - rect.left) /
+                        rect.width
+                    )
+                );
+
+
+            /*
+               Log para diagnóstico:
+               se o seek ainda pular para o início,
+               abra o console (F12) e veja a linha
+               "SEEK:" para conferir o percent.
+            */
+
+            console.log(
+                "SEEK: percent",
+                Math.round(percent * 100) + "%"
+            );
+
+
+            spotifyCommandRunning = true;
+
+            try {
+
+                /*
+                   DESCOBERTA (rodada 13): o AVA
+                   intercepta o fetch para
+                   api.spotify.com (PUT engolido).
+                   MAS o Web Playback SDK usa um
+                   canal WebSocket PRÓPRIO, que o
+                   AVA NÃO intercepta — e por ele
+                   a música toca.
+
+                   CONFIRMADO NA DOC DO SDK:
+                   player.seek(ms), pause, resume,
+                   togglePlay, next/previousTrack e
+                   setVolume são métodos REAIS do
+                   SDK (canal WebSocket). JÁ
+                   shuffle/repeat NÃO existem no SDK
+                   — só pela Web API.
+
+                   ESTRATÉGIA (v14):
+                   - seek: 100% SDK (funciona).
+                   - shuffle: tenta pela Web API;
+                     se o AVA engolir o PUT, avisa
+                     no log (o botão só atualiza
+                     com confirmação real via GET).
+
+                   seek(ms) recebe 0 a 1000.
+                */
+
+                const seekMs =
+                    Math.round(
+                        percent *
+                        1000
+                    );
+
+
+                /*
+                   1. Estado atual (shuffle e pausa)
+                      via estado do SDK — sem API.
+                */
+
+                const sdkState =
+                    spotifyPlayer._state || {};
+
+                const shuffleWasOn =
+                    sdkState.shuffle === true;
+
+                const wasPlaying =
+                    sdkState.paused !== true;
+
+                console.log(
+                    "SEEK [1/4]: estado do SDK",
+                    "| shuffle:",
+                    shuffleWasOn ? "SIM" : "não",
+                    "| tocando:",
+                    wasPlaying ? "sim" : "não"
+                );
+
+
+                /*
+                   2. O SDK NÃO tem método de
+                      shuffle (só seek/play/volume)
+                      e o AVA engole os PUTs da Web
+                      API — ou seja: com o shuffle
+                      LIGADO não temos como desligá-
+                      lo pelo AVA, e seek com shuffle
+                      ligado TROCA de música.
+
+                      Se o shuffle estava ligado:
+                      avisamos e seguimos (a música
+                      pode trocar); se estava
+                      desligado, o seek vai para o
+                      ponto exato clicado.
+                */
+
+                if (shuffleWasOn) {
+
+                    console.warn(
+                        "SEEK [2/4]: shuffle LIGADO",
+                        "(não consigo desligar daqui)",
+                        "→ o seek pode trocar de música;",
+                        "desative o aleatório pelo app",
+                        "ou pelo botão ↻ do player"
+                    );
+
+                }
+
+
+                /*
+                   3. Aplica o seek pelo SDK (canal
+                      WebSocket, o AVA não intercepta).
+                      Com shuffle desligado, pula para
+                      o ponto exato clicado.
+                */
+
+                if (wasPlaying) {
+
+                    await spotifyPlayer.pause();
+
+                    await wait(300);
+
+                }
+
+
+                await spotifyPlayer.seek(seekMs);
+
+                console.log(
+                    "SEEK [3/4]: comando de seek",
+                    seekMs + "ms",
+                    "enviado pelo SDK ✓"
+                );
+
+
+                /*
+                   4. Volta a tocar da nova posição.
+                */
+
+                if (wasPlaying) {
+
+                    await wait(300);
+
+                    await spotifyPlayer.resume();
+
+                }
+
+
+                console.log(
+                    "SEEK [4/4]: ok",
+                    shuffleWasOn ?
+                    "(shuffle ainda ligado — se a música trocou, desative o aleatório no app)" :
+                    "(pulei para o ponto exato)"
+                );
+
+
+            } catch (error) {
+
+                console.error(
+                    "SEEK:",
+                    error
+                );
+
+            } finally {
+
+                setTimeout(
+                    () => {
+                        spotifyCommandRunning = false;
+                    },
+                    500
+                );
+
+            }
+
+        }
+
+
+        /*
+           Lê o estado de pausa atual do player
+           (fallback para undefined quando o player
+           ainda não informou nada).
+        */
+
+        function stateOfPlayerPaused() {
+
+            if (
+                spotifyPlayer &&
+                spotifyPlayer._state
+            )
+                return spotifyPlayer._state.paused;
+
+            return false;
+
+        }
+
+
+        /* =========================================================
+           ESTADO VISUAL DO BOTÃO ALEATÓRIO
+        ========================================================= */
+
+        function updateShuffleButton(shuffleOn) {
+
+            const button =
+                document.getElementById(
+                    "sp-shuffle"
+                );
+
+            if (!button)
+                return;
+
+            if (shuffleOn) {
+
+                button.style.color =
+                    "#1db954";
+
+                button.style.background =
+                    "#1db95422";
+
+                button.style.borderRadius =
+                    "8px";
+
+                button.title =
+                    "Aleatório ATIVADO (clique para desativar)";
+
+            } else {
+
+                button.style.color =
+                    "#aaa";
+
+                button.style.background =
+                    "none";
+
+                button.title =
+                    "Aleatório DESATIVADO (clique para ativar)";
+
+            }
+
+        }
+
+
+        /* =========================================================
+           ESTADO DO PLAYER
+        ========================================================= */
+
+        function updatePlayerState(state) {
+
+            if (!state)
+                return;
+
+            const track =
+                state.track_window &&
+                state.track_window.current_track;
+
+            if (!track)
+                return;
+
+            const trackElement =
+                document.getElementById(
+                    "sp-track"
+                );
+
+            const artistElement =
+                document.getElementById(
+                    "sp-artist"
+                );
+
+            const albumElement =
+                document.getElementById(
+                    "sp-album"
+                );
+
+            const coverElement =
+                document.getElementById(
+                    "sp-cover"
+                );
+
+            const progressElement =
+                document.getElementById(
+                    "sp-progress"
+                );
+
+            const currentTimeElement =
+                document.getElementById(
+                    "sp-current-time"
+                );
+
+            const totalTimeElement =
+                document.getElementById(
+                    "sp-total-time"
+                );
+
+            const playElement =
+                document.getElementById(
+                    "sp-play"
+                );
+
+
+            if (trackElement)
+                trackElement.innerHTML =
+                escapeHTML(track.name);
+
+
+            if (artistElement)
+                artistElement.innerHTML =
+                escapeHTML(
+                    track.artists
+                    .map(a => a.name)
+                    .join(", ")
+                );
+
+
+            if (albumElement)
+                albumElement.innerHTML =
+                escapeHTML(
+                    track.album ?
+                    track.album.name :
+                    ""
+                );
+
+
+            if (
+                coverElement &&
+                track.album &&
+                track.album.images &&
+                track.album.images.length
+            ) {
+
+                coverElement.src =
+                    track.album.images[
+                        track.album.images.length - 1
+                    ].url;
+
+            }
+
+
+            const percent =
+                state.duration ?
+                (
+                    state.position /
+                    state.duration
+                ) * 100 :
+                0;
+
+
+            if (progressElement)
+                progressElement.style.width =
+                percent + "%";
+
+
+            if (currentTimeElement)
+                currentTimeElement.innerHTML =
+                formatTime(
+                    state.position
+                );
+
+
+            if (totalTimeElement)
+                totalTimeElement.innerHTML =
+                formatTime(
+                    state.duration
+                );
+
+
+            if (playElement)
+                playElement.innerHTML =
+                state.paused ?
+                "▶" :
+                "❚❚";
+
+
+            /*
+               ALEATÓRIO: agora o botão tem um fundo
+               verde claro quando está ATIVO, além da
+               cor verde no ícone — fica impossível
+               confundir o estado.
+
+               O estado visual é lido DIRETAMENTE do
+               player (state.shuffle), então o botão
+               sempre reflete a realidade — inclusive
+               se o shuffle foi ligado em outro
+               dispositivo (celular, etc).
+            */
+
+            console.log(
+                "SHUFFLE ESTADO:",
+                state.shuffle === true ? "ATIVADO" : "desativado"
+            );
+
+            updateShuffleButton(
+                !!state.shuffle
+            );
+
+        }
+
+
+        /* =========================================================
+           TOCAR UMA MÚSICA ESPECÍFICA
+           CORREÇÃO PRINCIPAL
+        ========================================================= */
+
+        /*
+           CORREÇÃO:
+           Agora o play usa o URI da música e a posição
+           REAL na fila (contando só tracks), em vez de
+           confiar no index visual da lista carregada.
+        */
+
+        /*
+           NOVO:
+           Busca a posição REAL de uma música dentro de
+           uma lista de itens já carregada.
+
+           Sintetiza a lista do Spotify pulando itens
+           inválidos (episódios, podcasts, músicas
+           removidas), exatamente como o SDK faz.
+        */
+
+        function findTrackPositionInList(
+            items,
+            trackUri
+        ) {
+
+            let realIndex = 0;
+
+            for (
+                let i = 0;
+                i < items.length;
+                i++
+            ) {
+
+                const item =
+                    items[i];
+
+                if (!item || !item.track)
+                    continue;
+
+
+                /*
+                   SÓ contamos itens de tipo "track".
+                   Episódios e podcasts não entram na
+                   fila de reprodução musical.
+                */
+
+                if (item.track.type !== "track")
+                    continue;
+
+
+                if (item.track.uri === trackUri)
+                    return realIndex;
+
+
+                realIndex++;
+
+            }
+
+
+            return -1;
+
+        }
+
+
+        async function playPlaylistTrack(
+            playlistId,
+            trackUri,
+            trackIndex
+        ) {
+
+            if (
+                !spotifyPlayer ||
+                !spotifyDeviceId
+            ) {
+
+                alert(
+                    "O player do AVA ainda não está conectado ao Spotify."
+                );
+
+                return;
+
+            }
+
+
+            /*
+               O trackUri vem DIRETO do clique na música.
+               Não dependemos mais de buscas na API,
+               que podiam falhar e gerar o alert de
+               "não localizei a música".
+            */
+
+            if (!trackUri) {
+
+                console.error(
+                    "PLAY TRACK: URI ausente para o índice",
+                    trackIndex
+                );
+
+                return;
+
+            }
+
+
+            if (spotifyCommandRunning)
+                return;
+
+
+            spotifyCommandRunning = true;
+
+
+            /*
+               Tenta descobrir a posição REAL da música
+               na fila (contando só tracks), para manter
+               a fila da playlist correta depois dela.
+
+               Se falhar (playlist muito longa, API lenta),
+               usamos apenas o URI — o Spotify ainda toca
+               a música exata.
+            */
+
+            let realPosition = -1;
+
+            try {
+
+                const data =
+                    await spotifyAPI(
+                        "/playlists/" +
+                        encodeURIComponent(
+                            playlistId
+                        ) +
+                        "/items?limit=100"
+                    );
+
+                if (data && data.items) {
+
+                    realPosition =
+                        findTrackPositionInList(
+                            data.items,
+                            trackUri
+                        );
+
+                }
+
+            } catch (error) {
+
+                console.error(
+                    "RESOLVE POSIÇÃO:",
+                    error
+                );
+
+            }
+
+
+            try {
+
+                /*
+                   MUITO IMPORTANTE:
+
+                   Ativa o player através do clique
+                   do usuário.
+                */
+
+                await activateSpotifyPlayer();
+
+
+                /*
+                   Garante que o dispositivo do AVA
+                   seja o destino.
+                */
+
+                const transferred =
+                    await ensureSpotifyDevice();
+
+                if (!transferred) {
+
+                    alert(
+                        "Não consegui conectar o player do AVA ao Spotify."
+                    );
+
+                    return;
+
+                }
+
+
+                const token =
+                    await getToken();
+
+                if (!token)
+                    return;
+
+
+                /*
+                   CORREÇÃO DA REPRODUÇÃO.
+
+                   A causa do bug de "várias músicas
+                   aparecendo de uma vez" era o uso de
+
+                   offset: { position: trackIndex }
+
+                   O index visual da lista não é a
+                   posição real na fila do Spotify
+                   (episódios pulados, playlists com
+                   mais de 50 músicas, músicas repetidas).
+
+                   Solução oficial do Spotify:
+
+                   offset: { uri: "spotify:track:..." }
+
+                   Assim o Spotify começa a tocar a
+                   música EXATA e continua pela playlist.
+                */
+
+                /*
+                   Sempre enviamos o URI da música clicada.
+                   Se achamos a posição real na fila,
+                   tocamos no contexto da playlist
+                   (a fila continua normalmente).
+
+                   Se não achamos a posição,
+                   tocamos SOMENTE a música pelo URI
+                   (sem alert, sem erro).
+                */
+
+                let requestBody = null;
+
+                if (realPosition >= 0) {
+
+                    requestBody = {
+
+                        context_uri: "spotify:playlist:" +
+                            playlistId,
+
+                        offset: {
+                            uri: trackUri
+                        },
+
+                        position_ms: 0
+
+                    };
+
+                } else {
+
+                    requestBody = {
+
+                        uris: [trackUri],
+
+                        position_ms: 0
+
+                    };
+
+                }
+
+
+                const response =
+                    await fetch(
+                        "https://api.spotify.com/v1/me/player/play?device_id=" +
+                        encodeURIComponent(
+                            spotifyDeviceId
+                        ), {
+
+                            method: "PUT",
+
+                            headers: {
+
+                                Authorization: "Bearer " + token,
+
+                                "Content-Type": "application/json"
+
+                            },
+
+                            body: JSON.stringify(requestBody)
+
+                        }
+                    );
+
+
+                if (
+                    !response.ok &&
+                    response.status !== 204
+                ) {
+
+                    const error =
+                        await response.text();
+
+                    console.error(
+                        "ERRO AO TOCAR:",
+                        error
+                    );
+
+                    alert(
+                        "O Spotify recusou a reprodução.\n\n" +
+                        error
+                    );
+
+                    return;
+
+                }
+
+
+                /*
+                   Atualiza a interface depois que
+                   o comando realmente foi enviado.
+                */
+
+                setTimeout(
+                    loadCurrentlyPlaying,
+                    700
+                );
+
+
+            } catch (error) {
+
+                console.error(
+                    "PLAY TRACK:",
+                    error
+                );
+
+            } finally {
+
+                /*
+                   Impede cliques repetidos de
+                   dispararem vários PLAY.
+                */
+
+                setTimeout(
+                    () => {
+                        spotifyCommandRunning = false;
+                    },
+                    500
+                );
+
+            }
+
+        }
+
+
+        /* =========================================================
+           TOCAR PLAYLIST INTEIRA
+        ========================================================= */
+
+        async function playPlaylist(
+            playlistId,
+            shuffle = false
+        ) {
+
+            if (
+                !spotifyPlayer ||
+                !spotifyDeviceId
+            ) {
+
+                alert(
+                    "O player do AVA ainda não está conectado ao Spotify."
+                );
+
+                return;
+
+            }
+
+
+            if (spotifyCommandRunning)
+                return;
+
+
+            spotifyCommandRunning = true;
+
+
+            try {
+
+                await activateSpotifyPlayer();
+
+                const transferred =
+                    await ensureSpotifyDevice();
+
+                if (!transferred) {
+
+                    alert(
+                        "Não consegui conectar o player do AVA ao Spotify."
+                    );
+
+                    return;
+
+                }
+
+
+                const token =
+                    await getToken();
+
+                if (!token)
+                    return;
+
+
+                /*
+                   PRIMEIRO definimos o shuffle.
+
+                   Isso é separado do PLAY porque
+                   o endpoint oficial do Spotify possui
+                   uma operação própria para shuffle.
+                */
+
+                const shuffleResponse =
+                    await fetch(
+                        "https://api.spotify.com/v1/me/player/shuffle?state=" +
+                        (shuffle ? "true" : "false") +
+                        "&device_id=" +
+                        encodeURIComponent(
+                            spotifyDeviceId
+                        ), {
+
+                            method: "PUT",
+
+                            headers: {
+                                Authorization: "Bearer " + token
+                            }
+
+                        }
+                    );
+
+
+                if (
+                    !shuffleResponse.ok &&
+                    shuffleResponse.status !== 204
+                ) {
+
+                    console.error(
+                        "SHUFFLE:",
+                        await shuffleResponse.text()
+                    );
+
+                }
+
+
+                /*
+                   Agora SIM iniciamos a playlist.
+
+                   Sem array de URIs.
+                   Sem fila manual.
+                   Sem várias músicas.
+
+                   Apenas UM contexto.
+                */
+
+                const response =
+                    await fetch(
+                        "https://api.spotify.com/v1/me/player/play?device_id=" +
+                        encodeURIComponent(
+                            spotifyDeviceId
+                        ), {
+
+                            method: "PUT",
+
+                            headers: {
+
+                                Authorization: "Bearer " + token,
+
+                                "Content-Type": "application/json"
+
+                            },
+
+                            body: JSON.stringify({
+
+                                context_uri: "spotify:playlist:" +
+                                    playlistId
+
+                            })
+
+                        }
+                    );
+
+
+                if (
+                    !response.ok &&
+                    response.status !== 204
+                ) {
+
+                    const error =
+                        await response.text();
+
+                    console.error(
+                        "PLAYLIST PLAY:",
+                        error
+                    );
+
+                    alert(
+                        "Erro ao iniciar playlist.\n\n" +
+                        error
+                    );
+
+                    return;
+
+                }
+
+
+                setTimeout(
+                    loadCurrentlyPlaying,
+                    700
+                );
+
+
+            } catch (error) {
+
+                console.error(
+                    "PLAYLIST:",
+                    error
+                );
+
+            } finally {
+
+                setTimeout(
+                    () => {
+
+                        spotifyCommandRunning =
+                            false;
+
+                    },
+                    700
+                );
+
+            }
+
+        }
+
+
+        /* =========================================================
+           ESPERA
+        ========================================================= */
+
+        function wait(ms) {
+
+            return new Promise(
+                resolve =>
+                setTimeout(
+                    resolve,
+                    ms
+                )
+            );
+
+        }
+
+
+        /* =========================================================
+           PLAY / PAUSE
+        ========================================================= */
+
+        async function playPause() {
+
+            if (!spotifyPlayer)
+                return;
+
+            if (spotifyCommandRunning)
+                return;
+
+            spotifyCommandRunning = true;
+
+            try {
+
+                await activateSpotifyPlayer();
+
+                await spotifyPlayer.togglePlay();
+
+            } finally {
+
+                setTimeout(
+                    () => {
+                        spotifyCommandRunning = false;
+                    },
+                    400
+                );
+
+            }
+
+        }
+
+
+        /* =========================================================
+           NEXT
+        ========================================================= */
+
+        async function nextTrack() {
+
+            if (!spotifyPlayer)
+                return;
+
+            if (spotifyCommandRunning)
+                return;
+
+            spotifyCommandRunning = true;
+
+            try {
+
+                await spotifyPlayer.nextTrack();
+
+            } finally {
+
+                setTimeout(
+                    () => {
+                        spotifyCommandRunning = false;
+                    },
+                    400
+                );
+
+            }
+
+        }
+
+
+        /* =========================================================
+           PREVIOUS
+        ========================================================= */
+
+        async function previousTrack() {
+
+            if (!spotifyPlayer)
+                return;
+
+            if (spotifyCommandRunning)
+                return;
+
+            spotifyCommandRunning = true;
+
+            try {
+
+                await spotifyPlayer.previousTrack();
+
+            } finally {
+
+                setTimeout(
+                    () => {
+                        spotifyCommandRunning = false;
+                    },
+                    400
+                );
+
+            }
+
+        }
+
+
+        /* =========================================================
+           ALEATÓRIO
+        ========================================================= */
+
+        async function toggleShuffle() {
+
+            if (
+                !spotifyPlayer ||
+                !spotifyDeviceId
+            )
+                return;
+
+            if (spotifyCommandRunning)
+                return;
+
+
+            const state =
+                await spotifyAPI(
+                    "/me/player"
+                );
+
+            if (!state) {
+
+                console.error(
+                    "SHUFFLE [1/3]: não foi possível ler o estado do player"
+                );
+
+                return;
+
+            }
+
+            /*
+               VERSÃO 14: o SDK NÃO tem método de
+               shuffle (confirmado na doc oficial) —
+               o comando é só pela Web API. O AVA
+               engole os PUTs (proxy), então o botão
+               SÓ atualiza com confirmação REAL via
+               GET (/me/player). Sem achismo.
+            */
+
+            const newState = !state.shuffle;
+
+            console.log(
+                "SHUFFLE [1/4]: estado atual",
+                state.shuffle === true ? "ATIVADO" : "desativado",
+                "| novo será:",
+                newState ? "ATIVADO" : "desativado"
+            );
+
+            try {
+
+                /*
+                   2. Envia o comando pela Web API.
+                      Se o AVA engolir o PUT, o
+                      spotifyPUT devolve null.
+                */
+
+                const response =
+                    await spotifyPUT(
+                        "/me/player/shuffle?state=" +
+                        (newState ? "true" : "false") +
+                        "&device_id=" +
+                        encodeURIComponent(
+                            spotifyDeviceId
+                        )
+                    );
+
+                if (response === null) {
+
+                    console.error(
+                        "SHUFFLE [2/4]: comando NÃO chegou ao Spotify",
+                        "(proxy do AVA engoliu o PUT)",
+                        "| tente de novo ou desative/ative",
+                        "o aleatório pelo app do celular"
+                    );
+
+                    return;
+
+                }
+
+                console.log(
+                    "SHUFFLE [2/4]: comando enviado",
+                    newState ? "ATIVADO" : "desativado"
+                );
+
+
+                /*
+                   3. CONFIRMAÇÃO: lê o estado real
+                      na API (GET funciona) e só
+                      atualiza o botão se o Spotify
+                      realmente obedeceu.
+                */
+
+                await wait(500);
+
+                const confirmed =
+                    await spotifyAPI(
+                        "/me/player"
+                    );
+
+                if (confirmed) {
+
+                    const realState =
+                        !!confirmed.shuffle;
+
+                    updateShuffleButton(realState);
+
+                    console.log(
+                        "SHUFFLE [3/4]: confirmado na API",
+                        realState ? "ATIVADO" : "desativado",
+                        "| botão atualizado",
+                        realState === newState ? "✓ igual ao esperado" : "⚠ diferente (o Spotify não obedeceu)"
+                    );
+
+                    /*
+                       4. Se o Spotify não obedeceu
+                          (ex.: fila de rádio), tenta
+                          mais uma vez.
+                    */
+
+                    if (realState !== newState) {
+
+                        await wait(500);
+
+                        await spotifyPUT(
+                            "/me/player/shuffle?state=" +
+                            (newState ? "true" : "false") +
+                            "&device_id=" +
+                            encodeURIComponent(
+                                spotifyDeviceId
+                            )
+                        );
+
+                        await wait(500);
+
+                        const confirmed2 =
+                            await spotifyAPI(
+                                "/me/player"
+                            );
+
+                        if (confirmed2) {
+
+                            updateShuffleButton(
+                                !!confirmed2.shuffle
+                            );
+
+                            console.log(
+                                "SHUFFLE [4/4]: segunda tentativa",
+                                !!confirmed2.shuffle ? "ATIVADO" : "desativado"
+                            );
+
+                        }
+
+                    }
+
+                } else {
+
+                    console.error(
+                        "SHUFFLE [3/4]: não consegui confirmar na API"
+                    );
+
+                }
+
+
+            } catch (error) {
+
+                console.error(
+                    error
+                );
+
+            }
+
+        }
+
+
+        /* =========================================================
+           ATUALIZAR ESTADO (A "GAMBIARRA" DE SYNC)
+        ========================================================= */
+
+        /*
+           Botão "↻" ao lado do aleatório.
+
+           Pede o estado real do Spotify na API e
+           atualiza TODA a interface: botões, barra
+           de progresso, tempos, capa, título.
+
+           Útil quando a interface parece "travada"
+           num estado antigo.
+        */
+
+        async function refreshShuffleState() {
+
+            if (spotifyCommandRunning)
+                return;
+
+
+            spotifyCommandRunning = true;
+
+            try {
+
+                const state =
+                    await spotifyAPI(
+                        "/me/player"
+                    );
+
+
+                if (state) {
+
+                    updatePlayerState(state);
+
+                    console.log(
+                        "REFRESH: estado sincronizado"
+                    );
+
+                } else {
+
+                    console.log(
+                        "REFRESH: nada tocando agora"
+                    );
+
+                }
+
+
+            } catch (error) {
+
+                console.error(
+                    "REFRESH:",
+                    error
+                );
+
+            } finally {
+
+                setTimeout(
+                    () => {
+                        spotifyCommandRunning = false;
+                    },
+                    300
+                );
+
+            }
+
+        }
+
+
+        /* =========================================================
+           PLAYLISTS
+        ========================================================= */
+
+        async function loadPlaylists() {
+
+            const container =
+                document.getElementById(
+                    "sp-playlists"
+                );
+
+            container.innerHTML =
+                '<div style="grid-column:1/-1;text-align:center;padding:20px;color:#777;">Carregando playlists...</div>';
+
+
+            const data =
+                await spotifyAPI(
+                    "/me/playlists?limit=50"
+                );
+
+
+            if (
+                !data ||
+                !data.items
+            ) {
+
+                container.innerHTML =
+                    '<div style="grid-column:1/-1;text-align:center;color:#777;">Erro ao carregar playlists.</div>';
+
+                return;
+
+            }
+
+
+            container.innerHTML = "";
+
+
+            data.items.forEach(
+                playlist => {
+
+                    const image =
+                        playlist.images &&
+                        playlist.images.length
+
+                        ?
+
+                        playlist.images[0].url
+
+                        :
+
+                        "https://placehold.co/300x300/111/777?text=♫";
+
+
+                    const card =
+                        document.createElement(
+                            "div"
+                        );
+
+
+                    card.style =
+                        "display:flex;" +
+                        "align-items:center;" +
+                        "gap:10px;" +
+                        "padding:8px;" +
+                        "background:#111;" +
+                        "border:1px solid #222;" +
+                        "border-radius:7px;" +
+                        "cursor:pointer;" +
+                        "transition:.2s;";
+
+
+                    card.onmouseover =
+                        function() {
+
+                            this.style.borderColor =
+                                "#1db954";
+
+                            this.style.background =
+                                "#181818";
+
+                            this.style.transform =
+                                "translateY(-2px)";
+
+                        };
+
+
+                    card.onmouseout =
+                        function() {
+
+                            this.style.borderColor =
+                                "#222";
+
+                            this.style.background =
+                                "#111";
+
+                            this.style.transform =
+                                "translateY(0)";
+
+                        };
+
+
+                    card.onclick =
+                        function() {
+
+                            loadPlaylistTracks(
+                                playlist.id,
+                                playlist.name,
+                                playlist.uri
+                            );
+
+                        };
+
+
+                    card.innerHTML =
+
+                        '<img src="' +
+                        image +
+                        '" style="' +
+                        'width:45px;' +
+                        'height:45px;' +
+                        'object-fit:cover;' +
+                        'border-radius:5px;' +
+                        'flex-shrink:0;' +
+                        '">' +
+
+                        '<span style="' +
+                        'font-size:11px;' +
+                        'color:#ccc;' +
+                        'white-space:nowrap;' +
+                        'overflow:hidden;' +
+                        'text-overflow:ellipsis;' +
+                        '">' +
+
+                        escapeHTML(
+                            playlist.name
+                        ) +
+
+                        '</span>';
+
+
+                    container.appendChild(
+                        card
+                    );
+
+                }
+            );
+
+        }
+
+
+        /* =========================================================
+           MÚSICAS DA PLAYLIST
+        ========================================================= */
+
+        async function loadPlaylistTracks(
+            playlistId,
+            playlistName,
+            playlistUri
+        ) {
+
+            currentPlaylistId =
+                playlistId;
+
+            currentPlaylistName =
+                playlistName;
+
+
+            const container =
+                document.getElementById(
+                    "sp-playlists"
+                );
+
+
+            container.innerHTML =
+                '<div style="grid-column:1/-1;text-align:center;padding:20px;color:#777;">Carregando...</div>';
+
+
+            /*
+               O endpoint /items é usado aqui.
+
+               Algumas playlists que você não possui
+               podem não permitir que o aplicativo leia
+               todas as faixas. Nesse caso o Spotify pode
+               permitir reprodução do contexto mesmo que
+               a lista de músicas não possa ser exibida.
+            */
+
+            const data =
+                await spotifyAPI(
+                    "/playlists/" +
+                    encodeURIComponent(
+                        playlistId
+                    ) +
+                    "/items?limit=50"
+                );
+
+
+            container.innerHTML = "";
+
+
+            /* =====================================================
+               CABEÇALHO DA PLAYLIST
+            ===================================================== */
+
+            const header =
+                document.createElement(
+                    "div"
+                );
+
+
+            header.style =
+                "grid-column:1/-1;" +
+                "display:flex;" +
+                "align-items:center;" +
+                "gap:8px;" +
+                "margin-bottom:5px;" +
+                "flex-wrap:wrap;";
+
+
+            header.innerHTML =
+
+                '<button ' +
+                'onclick="loadPlaylists()" ' +
+                'style="' +
+                'background:#181818;' +
+                'border:1px solid #333;' +
+                'color:#ddd;' +
+                'padding:7px 12px;' +
+                'border-radius:7px;' +
+                'cursor:pointer;' +
+                'font-size:11px;' +
+                '">' +
+                '← Voltar' +
+                '</button>' +
+
+
+                '<button ' +
+                'onclick="playPlaylist(\'' +
+                escapeJS(playlistId) +
+                '\',false)" ' +
+                'style="' +
+                'background:#1db954;' +
+                'border:0;' +
+                'color:#000;' +
+                'padding:7px 12px;' +
+                'border-radius:7px;' +
+                'cursor:pointer;' +
+                'font-size:11px;' +
+                'font-weight:bold;' +
+                '">' +
+                '▶ Playlist' +
+                '</button>' +
+
+
+                '<button ' +
+                'onclick="playPlaylist(\'' +
+                escapeJS(playlistId) +
+                '\',true)" ' +
+                'style="' +
+                'background:#181818;' +
+                'border:1px solid #333;' +
+                'color:#ddd;' +
+                'padding:7px 12px;' +
+                'border-radius:7px;' +
+                'cursor:pointer;' +
+                'font-size:11px;' +
+                '">' +
+                '🔀 Aleatório' +
+                '</button>' +
+
+
+                '<span style="' +
+                'font-size:13px;' +
+                'font-weight:bold;' +
+                'color:#eee;' +
+                'margin-left:4px;' +
+                '">' +
+
+                escapeHTML(
+                    playlistName
+                ) +
+
+                '</span>';
+
+
+            container.appendChild(
+                header
+            );
+
+
+            /*
+               Se o Spotify não devolver as músicas,
+               ainda mostramos os botões de reprodução.
+            */
+
+            if (
+                !data ||
+                !data.items
+            ) {
+
+                const unavailable =
+                    document.createElement(
+                        "div"
+                    );
+
+                unavailable.style =
+                    "grid-column:1/-1;" +
+                    "padding:20px;" +
+                    "text-align:center;" +
+                    "color:#777;" +
+                    "font-size:11px;";
+
+                unavailable.innerHTML =
+                    "As faixas desta playlist não podem ser exibidas pelo AVA.<br>" +
+                    "Mas o Spotify ainda pode reproduzir a playlist pelo contexto.";
+
+                container.appendChild(
+                    unavailable
+                );
+
+                return;
+
+            }
+
+
+            if (data.items.length === 0) {
+
+                const empty =
+                    document.createElement(
+                        "div"
+                    );
+
+                empty.style =
+                    "grid-column:1/-1;" +
+                    "padding:20px;" +
+                    "text-align:center;" +
+                    "color:#777;" +
+                    "font-size:11px;";
+
+                empty.innerHTML =
+                    "Nenhuma faixa disponível.";
+
+                container.appendChild(
+                    empty
+                );
+
+                return;
+
+            }
+
+
+            /* =====================================================
+               FAIXAS
+            ===================================================== */
+
+            data.items.forEach(
+                (item, index) => {
+
+                    const track =
+                        item.item;
+
+
+                    if (!track)
+                        return;
+
+
+                    if (track.type !== "track")
+                        return;
+
+
+                    const image =
+                        track.album &&
+                        track.album.images &&
+                        track.album.images.length
+
+                        ?
+
+                        track.album.images[
+                            track.album.images.length - 1
+                        ].url
+
+                        :
+
+                        "https://placehold.co/100x100/111/777?text=♫";
+
+
+                    const row =
+                        document.createElement(
+                            "div"
+                        );
+
+
+                    row.style =
+                        "display:flex;" +
+                        "align-items:center;" +
+                        "gap:10px;" +
+                        "padding:8px;" +
+                        "background:#111;" +
+                        "border:1px solid #222;" +
+                        "border-radius:7px;" +
+                        "cursor:pointer;" +
+                        "transition:.2s;";
+
+
+                    row.onmouseover =
+                        function() {
+
+                            this.style.borderColor =
+                                "#1db954";
+
+                            this.style.background =
+                                "#181818";
+
+                            this.style.transform =
+                                "translateX(3px)";
+
+                        };
+
+
+                    row.onmouseout =
+                        function() {
+
+                            this.style.borderColor =
+                                "#222";
+
+                            this.style.background =
+                                "#111";
+
+                            this.style.transform =
+                                "translateX(0)";
+
+                        };
+
+
+                    /*
+                       CORREÇÃO DEFINITIVA:
+
+                       Agora passamos o URI da música
+                       DIRETO do clique, sem depender de
+                       buscas na API.
+
+                       O Spotify recebe:
+                       "toque ESTA música dentro desta
+                        playlist" — sem chance de erro
+                        de posição.
+                    */
+
+                    row.onclick =
+                        function() {
+
+                            playPlaylistTrack(
+                                playlistId,
+                                track.uri,
+                                index
+                            );
+
+                        };
+
+
+                    row.innerHTML =
+
+                        '<div style="' +
+                        'width:20px;' +
+                        'text-align:center;' +
+                        'font-size:10px;' +
+                        'color:#555;' +
+                        '">' +
+
+                        (index + 1) +
+
+                        '</div>' +
+
+
+                        '<img src="' +
+                        image +
+                        '" style="' +
+                        'width:42px;' +
+                        'height:42px;' +
+                        'object-fit:cover;' +
+                        'border-radius:5px;' +
+                        '">' +
+
+
+                        '<div style="' +
+                        'flex:1;' +
+                        'min-width:0;' +
+                        '">' +
+
+
+                        '<div style="' +
+                        'font-size:12px;' +
+                        'color:#eee;' +
+                        'white-space:nowrap;' +
+                        'overflow:hidden;' +
+                        'text-overflow:ellipsis;' +
+                        '">' +
+
+                        escapeHTML(
+                            track.name
+                        ) +
+
+                        '</div>' +
+
+
+                        '<div style="' +
+                        'font-size:10px;' +
+                        'color:#777;' +
+                        'white-space:nowrap;' +
+                        'overflow:hidden;' +
+                        'text-overflow:ellipsis;' +
+                        '">' +
+
+                        escapeHTML(
+                            track.artists
+                            .map(
+                                a => a.name
+                            )
+                            .join(", ")
+                        ) +
+
+                        '</div>' +
+
+
+                        '</div>';
+
+
+                    container.appendChild(
+                        row
+                    );
+
+                }
+            );
+
+        }
+
+
+        /* =========================================================
+           MÚSICA ATUAL
+        ========================================================= */
+
+        async function loadCurrentlyPlaying() {
+
+            /*
+               Se o SDK estiver funcionando,
+               ele próprio fornece o estado.
+
+               Não fazemos uma segunda consulta que
+               possa competir com o SDK.
+            */
+
+            if (spotifyPlayer)
+                return;
+
+
+            const data =
+                await spotifyAPI(
+                    "/me/player"
+                );
+
+
+            if (
+                !data ||
+                !data.item
+            )
+                return;
+
+
+            const track =
+                data.item;
+
+
+            document.getElementById(
+                    "sp-track"
+                ).innerHTML =
+                escapeHTML(
+                    track.name
+                );
+
+
+            document.getElementById(
+                    "sp-artist"
+                ).innerHTML =
+                escapeHTML(
+                    track.artists
+                    .map(
+                        a => a.name
+                    )
+                    .join(", ")
+                );
+
+
+            document.getElementById(
+                    "sp-album"
+                ).innerHTML =
+                escapeHTML(
+                    track.album ?
+                    track.album.name :
+                    ""
+                );
+
+
+            if (
+                track.album &&
+                track.album.images &&
+                track.album.images.length
+            ) {
+
+                document.getElementById(
+                        "sp-cover"
+                    ).src =
+                    track.album.images[
+                        track.album.images.length - 1
+                    ].url;
+
+            }
+
+        }
+
+
+        /* =========================================================
+           SEGURANÇA
+        ========================================================= */
+
+        function escapeHTML(text) {
+
+            return String(text || "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "'");
+
+        }
+
+
+        function escapeJS(text) {
+
+            return String(text || "")
+                .replace(/\\/g, "\\\\")
+                .replace(/'/g, "\\'")
+                .replace(/"/g, '\\"');
+
+        }
+
+
+        /* =========================================================
+           STATUS
+        ========================================================= */
+
+        function showStatus(text) {
+
+            const status =
+                document.getElementById(
+                    "sp-status"
+                );
+
+            if (status)
+                status.innerHTML =
+                text;
+
+        }
+
+
+        /* =========================================================
+           PERFIL
+        ========================================================= */
+
+        async function loadProfile() {
+
+            const user =
+                await spotifyAPI(
+                    "/me"
+                );
+
+            if (!user)
+                return;
+
+
+            document.getElementById(
+                    "sp-user"
+                ).innerHTML =
+                "🎵 " +
+                escapeHTML(
+                    user.display_name ||
+                    "Spotify"
+                );
+
+        }
+
+
+        /* =========================================================
+           DASHBOARD
+        ========================================================= */
+
+        async function loadDashboard() {
+
+            const token =
+                await getToken();
+
+
+            const login =
+                document.getElementById(
+                    "sp-login"
+                );
+
+
+            const dashboard =
+                document.getElementById(
+                    "sp-dashboard"
+                );
+
+
+            if (!token) {
+
+                login.style.display =
+                    "block";
+
+                dashboard.style.display =
+                    "none";
+
+                return;
+
+            }
+
+
+            login.style.display =
+                "none";
+
+            dashboard.style.display =
+                "block";
+
+
+            await loadProfile();
+
+            await loadCurrentlyPlaying();
+
+            await loadPlaylists();
+
+        }
+
+
+        /* =========================================================
+           INICIALIZAÇÃO
+        ========================================================= */
+
+        handleSpotifyCallback();
+    </script>
+
+
+    <!-- =====================================================
+     LOGIN
+===================================================== -->
+
+    <div id="sp-login" style="padding:35px;text-align:center;" bis_skin_checked="1">
+
+        <div style="font-size: 11px; color: rgb(29, 185, 84); font-weight: bold; letter-spacing: 4px; margin-bottom: 10px; --darkreader-inline-color: var(--darkreader-text-1db954, #51e485);" data-darkreader-inline-color="" bis_skin_checked="1">
+            SPOTIFY
+        </div>
+
+        <div style="font-size: 25px; letter-spacing: 2px; color: rgb(238, 238, 238); margin-bottom: 10px; --darkreader-inline-color: var(--darkreader-text-eeeeee, #dddad6);" data-darkreader-inline-color="" bis_skin_checked="1">
+            CONECTE SUA CONTA
+        </div>
+
+        <div id="sp-status" style="color: rgb(119, 119, 119); font-size: 13px; margin-bottom: 22px; --darkreader-inline-color: var(--darkreader-text-777777, #9d9488);" data-darkreader-inline-color="" bis_skin_checked="1">
+            Acesse suas playlists diretamente pelo AVA.
+        </div>
+
+        <button onclick="spotifyLogin()" style="padding: 12px 25px; background: rgb(29, 185, 84); color: rgb(255, 255, 255); border: 0px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 13px; --darkreader-inline-bgimage: initial; --darkreader-inline-bgcolor: var(--darkreader-background-1db954, #179443); --darkreader-inline-color: var(--darkreader-text-ffffff, #e8e6e3); --darkreader-inline-border-top: 0px; --darkreader-inline-border-right: 0px; --darkreader-inline-border-bottom: 0px; --darkreader-inline-border-left: 0px;" data-darkreader-inline-bgimage="" data-darkreader-inline-bgcolor="" data-darkreader-inline-color="" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="">
+            🎵 CONECTAR AO SPOTIFY
+        </button>
+
+    </div>
+
+
+    <!-- =====================================================
+     DASHBOARD
+===================================================== -->
+
+    <div id="sp-dashboard" style="display:none;" bis_skin_checked="1">
+
+
+        <!-- CABEÇALHO -->
+
+        <div style="padding: 18px 22px; border-bottom: 1px solid rgb(34, 34, 34); display: flex; justify-content: space-between; align-items: center; gap: 10px; --darkreader-inline-border-bottom: var(--darkreader-border-222222, #81786a);" data-darkreader-inline-border-bottom="" bis_skin_checked="1">
+
+            <div style="font-size: 11px; letter-spacing: 3px; color: rgb(29, 185, 84); font-weight: bold; --darkreader-inline-color: var(--darkreader-text-1db954, #51e485);" data-darkreader-inline-color="" bis_skin_checked="1">
+                SPOTIFY
+            </div>
+
+            <div id="sp-device" style="font-size: 10px; color: rgb(119, 119, 119); --darkreader-inline-color: var(--darkreader-text-777777, #9d9488);" data-darkreader-inline-color="" bis_skin_checked="1">
+                Conectando player...
+            </div>
+
+            <div id="sp-user" style="font-size: 11px; color: rgb(119, 119, 119); --darkreader-inline-color: var(--darkreader-text-777777, #9d9488);" data-darkreader-inline-color="" bis_skin_checked="1">
+                🎵 Spotify
+            </div>
+
+        </div>
+
+
+        <!-- PLAYER -->
+
+        <div style="padding:22px;display:flex;gap:20px;align-items:center;" bis_skin_checked="1">
+
+            <img id="sp-cover" src="https://placehold.co/300x300/111111/777777?text=♫" style="display: block; width: 150px; height: 150px; object-fit: cover; border-radius: 8px; box-shadow: rgba(0, 0, 0, 0.5) 0px 8px 25px; flex-shrink: 0; --darkreader-inline-boxshadow: var(--darkreader-background-00000080, rgba(0, 0, 0, 0.5)) 0px 8px 25px;" data-darkreader-inline-boxshadow="">
+
+
+            <div style="min-width:0;flex:1;" bis_skin_checked="1">
+
+                <div style="font-size: 10px; color: rgb(119, 119, 119); letter-spacing: 2px; margin-bottom: 7px; --darkreader-inline-color: var(--darkreader-text-777777, #9d9488);" data-darkreader-inline-color="" bis_skin_checked="1">
+                    NOW PLAYING
+                </div>
+
+
+                <div id="sp-track" style="font-size: 22px; font-weight: bold; color: rgb(238, 238, 238); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; --darkreader-inline-color: var(--darkreader-text-eeeeee, #dddad6);" data-darkreader-inline-color="" bis_skin_checked="1">
+                    Nada tocando agora
+                </div>
+
+
+                <div id="sp-artist" style="font-size: 14px; color: rgb(29, 185, 84); margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; --darkreader-inline-color: var(--darkreader-text-1db954, #51e485);" data-darkreader-inline-color="" bis_skin_checked="1">
+                    Conectando...
+                </div>
+
+
+                <div id="sp-album" style="font-size: 11px; color: rgb(102, 102, 102); margin-top: 4px; --darkreader-inline-color: var(--darkreader-text-666666, #a8a095);" data-darkreader-inline-color="" bis_skin_checked="1">
+                </div>
+
+
+                <!-- TEMPO DA MÚSICA + BARRA CLICÁVEL -->
+
+                <div style="display:flex;align-items:center;gap:8px;margin-top:20px;">
+
+                    <div id="sp-current-time" style="font-size:10px;color:rgb(119,119,119);min-width:34px;text-align:right;--darkreader-inline-color:var(--darkreader-text-777777,#9d9488);">0:00</div>
+
+                    <div id="sp-progress-bar" onclick="seekToPosition(event)" style="flex:1;height:6px;background:rgb(41,41,41);border-radius:5px;overflow:hidden;cursor:pointer;--darkreader-inline-bgimage:initial;--darkreader-inline-bgcolor:var(--darkreader-background-292929,#1f2123);" title="Clique para pular para essa parte da música">
+
+                        <div id="sp-progress" style="width:0%;height:100%;background:rgb(29,185,84);transition:width 0.4s;--darkreader-inline-bgimage:initial;--darkreader-inline-bgcolor:var(--darkreader-background-1db954,#179443);"></div>
+
+                    </div>
+
+                    <div id="sp-total-time" style="font-size:10px;color:rgb(119,119,119);min-width:34px;--darkreader-inline-color:var(--darkreader-text-777777,#9d9488);">0:00</div>
+
+                </div>
+
+
+                <!-- CONTROLES -->
+
+                <div style="display:flex;align-items:center;justify-content:center;gap:18px;margin-top:18px;" bis_skin_checked="1">
+
+                    <button onclick="previousTrack()" style="background: none; border: 0px; color: rgb(170, 170, 170); font-size: 20px; cursor: pointer; --darkreader-inline-bgimage: none; --darkreader-inline-bgcolor: initial; --darkreader-inline-border-top: 0px; --darkreader-inline-border-right: 0px; --darkreader-inline-border-bottom: 0px; --darkreader-inline-border-left: 0px; --darkreader-inline-color: var(--darkreader-text-aaaaaa, #b2aca2);" data-darkreader-inline-bgimage="" data-darkreader-inline-bgcolor="" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="" data-darkreader-inline-color="">
+                        ◀
+                    </button>
+
+
+                    <button id="sp-play" onclick="playPause()" style="width: 42px; height: 42px; border-radius: 50%; background: rgb(29, 185, 84); border: 0px; color: rgb(0, 0, 0); font-size: 16px; font-weight: bold; cursor: pointer; --darkreader-inline-bgimage: initial; --darkreader-inline-bgcolor: var(--darkreader-background-1db954, #179443); --darkreader-inline-border-top: 0px; --darkreader-inline-border-right: 0px; --darkreader-inline-border-bottom: 0px; --darkreader-inline-border-left: 0px; --darkreader-inline-color: var(--darkreader-text-000000, #e8e6e3);" data-darkreader-inline-bgimage="" data-darkreader-inline-bgcolor="" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="" data-darkreader-inline-color="">
+                        ▶
+                    </button>
+
+
+                    <button onclick="nextTrack()" style="background: none; border: 0px; color: rgb(170, 170, 170); font-size: 20px; cursor: pointer; --darkreader-inline-bgimage: none; --darkreader-inline-bgcolor: initial; --darkreader-inline-border-top: 0px; --darkreader-inline-border-right: 0px; --darkreader-inline-border-bottom: 0px; --darkreader-inline-border-left: 0px; --darkreader-inline-color: var(--darkreader-text-aaaaaa, #b2aca2);" data-darkreader-inline-bgimage="" data-darkreader-inline-bgcolor="" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="" data-darkreader-inline-color="">
+                        ▶
+                    </button>
+
+
+                    <button id="sp-shuffle" onclick="toggleShuffle()" title="Aleatório DESATIVADO (clique para ativar)" style="background: none; border: 0px; border-radius: 8px; color: rgb(170, 170, 170); font-size: 17px; padding: 4px 8px; cursor: pointer; --darkreader-inline-bgimage: none; --darkreader-inline-bgcolor: initial; --darkreader-inline-border-top: 0px; --darkreader-inline-border-right: 0px; --darkreader-inline-border-bottom: 0px; --darkreader-inline-border-left: 0px; --darkreader-inline-color: var(--darkreader-text-aaaaaa, #b2aca2);" data-darkreader-inline-bgimage="" data-darkreader-inline-bgcolor="" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="" data-darkreader-inline-color="">
+                        🔀
+                    </button>
+
+
+                    <button onclick="refreshShuffleState()" title="Atualizar estado do player" style="background: none; border: 1px solid rgb(60, 60, 60); border-radius: 8px; color: rgb(170, 170, 170); font-size: 13px; padding: 4px 10px; cursor: pointer; --darkreader-inline-bgimage: none; --darkreader-inline-bgcolor: initial; --darkreader-inline-border-top: 1px solid #3c3c3c; --darkreader-inline-border-right: 1px solid #3c3c3c; --darkreader-inline-border-bottom: 1px solid #3c3c3c; --darkreader-inline-border-left: 1px solid #3c3c3c; --darkreader-inline-color: var(--darkreader-text-aaaaaa, #b2aca2);" data-darkreader-inline-bgimage="" data-darkreader-inline-bgcolor="" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="" data-darkreader-inline-color="">
+                        ↻
+                    </button>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- PLAYLISTS -->
+
+        <div style="padding:0 22px 22px;" bis_skin_checked="1">
+
+            <div style="font-size: 11px; color: rgb(119, 119, 119); letter-spacing: 2px; margin-bottom: 10px; --darkreader-inline-color: var(--darkreader-text-777777, #9d9488);" data-darkreader-inline-color="" bis_skin_checked="1">
+                MINHAS PLAYLISTS
+            </div>
+
+
+            <div id="sp-playlists" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;" bis_skin_checked="1">
+                Carregando...
+            </div>
+
+        </div>
+
+
+        <!-- RODAPÉ -->
+
+        <div style="padding: 10px 22px; border-top: 1px solid rgb(29, 29, 29); text-align: right; --darkreader-inline-border-top: var(--darkreader-border-1d1d1d, #82796b);" data-darkreader-inline-border-top="" bis_skin_checked="1">
+
+            <a href="https://open.spotify.com/" target="_blank" rel="noopener noreferrer" style="color: rgb(119, 119, 119); text-decoration: none; font-size: 10px; --darkreader-inline-color: var(--darkreader-text-777777, #9d9488);" data-darkreader-inline-color="">
+                Abrir Spotify
+            </a>
+
+        </div>
+
+
+    </div>
+
+</div>
