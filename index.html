@@ -3029,12 +3029,29 @@
                                     " • " + playlist.tracks.total + " músicas" :
                                     ""),
                                     "PLAYLIST",
-                                    () =>
-                                        playPlaylist(
+                                    () => {
+
+                                        /*
+                                           NOVIDADE (v21.1):
+                                           Em vez de tocar a playlist
+                                           direto, o clique abre a
+                                           playlist com as faixas dela
+                                           (igual às playlists salvas).
+                                           Aí o usuário escolhe a faixa
+                                           ou usa os botões ▶ / 🔀.
+                                        */
+
+                                        searchResultsContainer.innerHTML = "";
+
+                                        searchInput.value = "";
+
+                                        loadPlaylistTracks(
                                             playlist.id,
                                             playlist.name,
-                                            false
-                                        )
+                                            playlist.uri
+                                        );
+
+                                    }
                                 );
 
                             }
