@@ -927,7 +927,7 @@
                     }) => {
 
                         console.log(
-                            "PLAYER AVA PRONTO (v16):",
+                            "PLAYER AVA PRONTO (v17):",
                             device_id
                         );
 
@@ -1106,6 +1106,122 @@
                 return false;
 
             }
+        }
+
+
+        /* =========================================================
+           AGUARDAR PLAYER PRONTO (IFRAME)
+        ========================================================= */
+
+        /*
+           RODADA FINAL:
+
+           Dentro de um iframe (Moodle), o Spotify
+           Web Playback SDK pode demorar a disparar
+           "ready" — às vezes nem dispara até uma
+           interação do usuário ou até o player ser
+           reconectado.
+
+           Antes, o alert "O player ainda não está
+           conectado" aparecia SEMPRE que o
+           device_id era nulo, mesmo quando o SDK
+           estava a segundos de conectar.
+
+           Agora: aguardamos o "ready" por até 10s
+           antes de desistir; se o player ainda
+           existe mas não conectou, forçamos
+           reconexão (disconnect + connect).
+        */
+
+        async function waitUntilSpotifyReady() {
+
+            if (spotifyPlayer && spotifyDeviceId)
+                return true;
+
+            if (!spotifyPlayer) {
+
+                /*
+                   SDK ainda não foi carregado
+                   (página recém-conectada):
+                   aguarda a função global de
+                   criação ser chamada? Não dá para
+                   injetar — só mostra mensagem.
+                */
+
+                return false;
+
+            }
+
+
+            /*
+               1º tenta forçar a conexão
+               (dentro de iframe o SDK às vezes
+               precisa disso).
+            */
+
+            try {
+
+                if (!spotifyPlayer.connect()) {
+
+                    /*
+                       connect() retorna false se já
+                       conectado; tudo bem, segue.
+                    */
+
+                }
+
+            } catch {}
+
+
+            /*
+               Aguarda o "ready" por até 10s
+               (consulta a cada 400ms).
+            */
+
+            const deadline = Date.now() + 10000;
+
+            while (Date.now() < deadline) {
+
+                if (spotifyDeviceId)
+                    return true;
+
+                await new Promise(r =>
+                    setTimeout(r, 400)
+                );
+
+            }
+
+
+            /*
+               Última tentativa: reconecta
+               (disconnect + connect).
+            */
+
+            try {
+
+                await spotifyPlayer.disconnect();
+
+            } catch {}
+
+            try {
+
+                spotifyPlayer.connect();
+
+            } catch {}
+
+            for (let i = 0; i < 10; i++) {
+
+                if (spotifyDeviceId)
+                    return true;
+
+                await new Promise(r =>
+                    setTimeout(r, 400)
+                );
+
+            }
+
+            return false;
+
         }
 
 
@@ -1342,9 +1458,12 @@
             event
         ) {
 
+            if (!spotifyPlayer)
+                return;
+
             if (
-                !spotifyPlayer ||
-                !spotifyDeviceId
+                !spotifyDeviceId &&
+                !await waitUntilSpotifyReady()
             )
                 return;
 
@@ -1835,16 +1954,34 @@
             trackIndex
         ) {
 
-            if (
-                !spotifyPlayer ||
-                !spotifyDeviceId
-            ) {
+            if (!spotifyPlayer) {
 
                 alert(
                     "O player do AVA ainda não está conectado ao Spotify."
                 );
 
                 return;
+
+            }
+
+            if (!spotifyDeviceId) {
+
+                showStatus(
+                    "⏳ Conectando ao Spotify..."
+                );
+
+                const ready =
+                    await waitUntilSpotifyReady();
+
+                if (!ready) {
+
+                    alert(
+                        "O player do AVA ainda não está conectado ao Spotify.\n\nDica: dentro do Moodle, o Spotify às vezes demora a ativar. Tente clicar de novo — se não funcionar, abra o player em uma aba nova."
+                    );
+
+                    return;
+
+                }
 
             }
 
@@ -2110,16 +2247,31 @@
             shuffle = false
         ) {
 
-            if (
-                !spotifyPlayer ||
-                !spotifyDeviceId
-            ) {
+            if (!spotifyPlayer) {
 
                 alert(
                     "O player do AVA ainda não está conectado ao Spotify."
                 );
 
                 return;
+
+            }
+
+            if (!spotifyDeviceId) {
+
+                showStatus(
+                    "⏳ Conectando ao Spotify..."
+                );
+
+                if (!await waitUntilSpotifyReady()) {
+
+                    alert(
+                        "O player do AVA ainda não está conectado ao Spotify.\n\nDica: dentro do Moodle, o Spotify às vezes demora a ativar. Tente clicar de novo — se não funcionar, abra o player em uma aba nova."
+                    );
+
+                    return;
+
+                }
 
             }
 
@@ -2408,9 +2560,12 @@
 
         async function toggleShuffle() {
 
+            if (!spotifyPlayer)
+                return;
+
             if (
-                !spotifyPlayer ||
-                !spotifyDeviceId
+                !spotifyDeviceId &&
+                !await waitUntilSpotifyReady()
             )
                 return;
 
