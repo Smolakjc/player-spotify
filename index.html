@@ -988,7 +988,7 @@
                     }) => {
 
                         console.log(
-                            "PLAYER AVA PRONTO (v18):",
+                            "PLAYER AVA PRONTO (v19):",
                             device_id
                         );
 
@@ -1599,10 +1599,31 @@
                    seek(ms) recebe 0 a 1000.
                 */
 
+                /*
+                   CORRIGIDO (v19):
+                   Antes o código mandava
+                   "percent * 1000" — ou seja,
+                   NO MÁXIMO 1000ms (1s) de
+                   qualquer música. Clicar na
+                   metade de uma música de 4min
+                   mandava 500ms = início.
+                   Era ISSO que fazia a barra
+                   "voltar pro começo".
+
+                   Agora: usa a duração REAL do
+                   estado do SDK (ms).
+                */
+
+                const duration =
+                    sdkState.duration || 0;
+
                 const seekMs =
+                    duration ?
                     Math.round(
-                        percent *
-                        1000
+                        percent * duration
+                    ) :
+                    Math.round(
+                        percent * 1000
                     );
 
 
