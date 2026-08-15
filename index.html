@@ -3806,18 +3806,73 @@
 
 
             /*
+               NOVIDADE (v23):
+               Terceira tentativa: o endpoint
+               /playlists/{id}/tracks é oficial e
+               funciona pra playlists públicas de
+               terceiros em MUITOS casos — sem
+               precisar tocar NADA no player.
+
+               Essa é a tentativa "zero player":
+               100% API, a música que o usuário está
+               ouvindo NÃO é afetada.
+            */
+
+            if (
+                !data ||
+                !data.items ||
+                !data.items.length
+            ) {
+
+                try {
+
+                    const tracks =
+                        await spotifyAPI(
+                            "/playlists/" +
+                            encodeURIComponent(
+                                playlistId
+                            ) +
+                            "/tracks?limit=100&fields=total,items(track(uri,type,name,album(images),artists(name),duration_ms))"
+                        );
+
+                    if (
+                        tracks &&
+                        tracks.items
+                    ) {
+
+                        data = {
+                            tracks: tracks,
+                            items: tracks.items
+                        };
+
+                    }
+
+                } catch (error) {
+
+                    console.error(
+                        "LOAD PL [tenta 3]:",
+                        error
+                    );
+
+                }
+
+            }
+
+
+            /*
                Paginação: quando a playlist tem mais
-               de 100 faixas, busca as páginas seguintes.
+               de 100 faixas, busca as páginas seguintes
+               — incluindo as vindas do /tracks (v23).
             */
 
             try {
 
-                if (
+                const pagTotal =
                     data &&
                     data.tracks &&
-                    data.tracks.total &&
-                    data.tracks.total > 100
-                ) {
+                    data.tracks.total;
+
+                if (pagTotal > 100) {
 
                     const total =
                         data.tracks.total;
@@ -3828,29 +3883,51 @@
                         offset += 100
                     ) {
 
+                        /*
+                           Usa o MESMO endpoint que
+                           trouxe os dados ("/tracks"
+                           ou "") pra manter
+                           compatibilidade (v23).
+                        */
+
+                        const basePath =
+                            (data && data.tracks && data.items) &&
+                            data.tracks.items === data.items &&
+                            !data.tracks.href
+
+                            ? "/playlists/" +
+                              encodeURIComponent(playlistId) +
+                              "/tracks"
+
+                            : "/playlists/" +
+                              encodeURIComponent(playlistId);
+
+
                         const next =
                             await spotifyAPI(
-                                "/playlists/" +
-                                encodeURIComponent(
-                                    playlistId
-                                ) +
-                                "?fields=tracks.items(track(uri,type,name,album(images),artists(name)))" +
+                                basePath +
+                                "?fields=total,items(track(uri,type,name,album(images),artists(name),duration_ms))" +
                                 "&limit=100" +
                                 "&offset=" + offset
                             );
 
-                        if (
-                            next &&
-                            next.tracks &&
-                            next.tracks.items
-                        ) {
+                        if (next) {
 
-                            if (!data.items)
-                                data.items = [];
+                            const nextItems =
+                                next.tracks
+                                    ? next.tracks.items
+                                    : next.items;
 
-                            data.items.push(
-                                ...next.tracks.items
-                            );
+                            if (nextItems && nextItems.length) {
+
+                                if (!data.items)
+                                    data.items = [];
+
+                                data.items.push(
+                                    ...nextItems
+                                );
+
+                            }
 
                         }
 
@@ -4052,7 +4129,7 @@
                     "margin-left:8px;";
 
                 discoverBtn.innerHTML =
-                    "🔍 Descobrir faixas (toca pausado)";
+                    "🔍 Descobrir faixas (assume o player por ~1min)";
 
                 discoverBtn.onclick =
                     async () => {
