@@ -3612,23 +3612,167 @@
 
 
             /*
-               O endpoint /items é usado aqui.
+               CORREÇÃO (v21.3):
 
-               Algumas playlists que você não possui
-               podem não permitir que o aplicativo leia
-               todas as faixas. Nesse caso o Spotify pode
-               permitir reprodução do contexto mesmo que
-               a lista de músicas não possa ser exibida.
+               Antes, playlists de outras pessoas
+               podiam falhar em carregar as faixas
+               por 3 motivos:
+
+               1. O endpoint /playlists/{id}/items às
+                  vezes é recusado para playlists que
+                  o usuário NÃO é dono (limitação
+                  estranha da API — mesmo públicas).
+
+               2. A resposta vinha sem os campos que
+                  precisávamos.
+
+               3. Se falhava, a tela ficava com um
+                  texto genérico e sem como tocar.
+
+               Agora:
+               - Tenta /playlists/{id} (que devolve as
+                 faixas embutidas no campo "tracks")
+               - Se não vier, tenta /playlists/{id}/items
+               - Paginação: se tiver mais de 100 faixas,
+                 busca as demais páginas
+               - Se TODA leitura falhar, mostra o
+                 cabeçalho mesmo assim com um aviso
+                 e os botões ▶ / 🔀 (o Spotify ainda
+                 toca pelo contexto)
             */
 
-            const data =
-                await spotifyAPI(
-                    "/playlists/" +
-                    encodeURIComponent(
-                        playlistId
-                    ) +
-                    "/items?limit=50"
+            let data = null;
+
+
+            try {
+
+                data =
+                    await spotifyAPI(
+                        "/playlists/" +
+                        encodeURIComponent(
+                            playlistId
+                        ) +
+                        "?fields=tracks.total,tracks.items(track(uri,type,name,album(images),artists(name)))" +
+                        "&limit=100"
+                    );
+
+            } catch (error) {
+
+                console.error(
+                    "LOAD PL [tenta 1]:",
+                    error
                 );
+
+            }
+
+
+            /*
+               /playlists/{id} devolve as faixas em
+               data.tracks (com total e items). Se
+               não veio, tenta o /items como fallback.
+            */
+
+            if (
+                data &&
+                data.tracks &&
+                data.tracks.items &&
+                data.tracks.items.length
+            ) {
+
+                data.items = data.tracks.items;
+
+            } else {
+
+                try {
+
+                    const items =
+                        await spotifyAPI(
+                            "/playlists/" +
+                            encodeURIComponent(
+                                playlistId
+                            ) +
+                            "/items?limit=50"
+                        );
+
+                    if (
+                        items &&
+                        items.items
+                    )
+                        data = items;
+
+                } catch (error) {
+
+                    console.error(
+                        "LOAD PL [tenta 2]:",
+                        error
+                    );
+
+                }
+
+            }
+
+
+            /*
+               Paginação: quando a playlist tem mais
+               de 100 faixas, busca as páginas seguintes.
+            */
+
+            try {
+
+                if (
+                    data &&
+                    data.tracks &&
+                    data.tracks.total &&
+                    data.tracks.total > 100
+                ) {
+
+                    const total =
+                        data.tracks.total;
+
+                    for (
+                        let offset = 100;
+                        offset < total;
+                        offset += 100
+                    ) {
+
+                        const next =
+                            await spotifyAPI(
+                                "/playlists/" +
+                                encodeURIComponent(
+                                    playlistId
+                                ) +
+                                "?fields=tracks.items(track(uri,type,name,album(images),artists(name)))" +
+                                "&limit=100" +
+                                "&offset=" + offset
+                            );
+
+                        if (
+                            next &&
+                            next.tracks &&
+                            next.tracks.items
+                        ) {
+
+                            if (!data.items)
+                                data.items = [];
+
+                            data.items.push(
+                                ...next.tracks.items
+                            );
+
+                        }
+
+                    }
+
+                }
+
+            } catch (error) {
+
+                console.error(
+                    "LOAD PL [paginação]:",
+                    error
+                );
+
+            }
 
 
             container.innerHTML = "";
@@ -3734,6 +3878,21 @@
                 !data.items
             ) {
 
+                /*
+                   CORREÇÃO (v21.3):
+
+                   Mesmo quando o Spotify NÃO deixa o
+                   app listar as faixas da playlist
+                   (comum em playlists de outras
+                   pessoas), o usuário AINDA PODE
+                   tocar a playlist inteira pelo
+                   contexto.
+
+                   Então mostramos o cabeçalho com os
+                   botões ▶ / 🔀 e um aviso claro —
+                   sem simplesmente desistir.
+                */
+
                 const unavailable =
                     document.createElement(
                         "div"
@@ -3743,12 +3902,14 @@
                     "grid-column:1/-1;" +
                     "padding:20px;" +
                     "text-align:center;" +
-                    "color:#777;" +
-                    "font-size:11px;";
+                    "color:#999;" +
+                    "font-size:11px;" +
+                    "border:1px dashed #333;" +
+                    "border-radius:7px;";
 
                 unavailable.innerHTML =
-                    "As faixas desta playlist não podem ser exibidas pelo AVA.<br>" +
-                    "Mas o Spotify ainda pode reproduzir a playlist pelo contexto.";
+                    "O Spotify não permitiu listar as faixas desta playlist.<br>" +
+                    "Mas ela ainda pode ser tocada pelos botões acima.";
 
                 container.appendChild(
                     unavailable
