@@ -971,7 +971,7 @@
                     }) => {
 
                         console.log(
-                            "PLAYER AVA PRONTO (v23.2):",
+                            "PLAYER AVA PRONTO (v23.3):",
                             device_id
                         );
 
@@ -4822,100 +4822,29 @@
                     /*
                        Avança pra próxima faixa.
 
-                       GARANTIA DE SILÊNCIO (v22.2):
-                       nextTrack() às vezes RESUME a
-                       reprodução sozinho (o Spotify
-                       reinicia o play após trocar de
-                       faixa). Por isso, logo em
-                       seguida, PAUSAMOS DE NOVO e
-                       zeramos o volume — a cada
-                       faixa, sem exceção. Assim o
-                       usuário não ouve NADA e o que
-                       ele estava ouvindo não é
-                       tocado por aqui.
+                       CORREÇÃO (v23.3) — nova ordem
+                       de operações:
+                       O PUT /me/player/volume seguia
+                       400 mesmo com corpo e query
+                       corretos (Spotify recusa volume
+                       nesse estado). E o nextTrack()
+                       às vezes RESUME o play.
+
+                       Nova estratégia: primeiro
+                       PAUSAR via API (que funciona),
+                       DEPOIS trocar a faixa e
+                       REPAUSAR — assim o áudio nunca
+                       tem janela para sair tocando.
+                       O SDK setVolume(0) fica como
+                       camada extra.
                     */
 
-                    await spotifyPlayer.nextTrack();
+                    const pauseToken2 =
+                        await getToken();
 
-
-                    /*
-                       GARANTIA DE SILÊNCIO (v22.3):
-                       nextTrack() às vezes RESUME a
-                       reprodução sozinho. Os métodos
-                       do SDK falhavam ("no list was
-                       loaded"), então usamos a API
-                       REST que pausa o dispositivo
-                       direto no servidor:
-                       volume 0 + pause após CADA
-                       avanço, sem exceção.
-                    */
-
-                    try {
-
-                        /*
-                           CORREÇÃO (v23.2):
-                           O PUT /volume via spotifyPUT
-                           seguia 400 (o corpo estava
-                           indo correto, mas o proxy do
-                           AVA/cached version podia
-                           alterar). Agora enviamos o
-                           fetch DIRETO e garantimos
-                           os dois controles:
-                           volume 0 (SDK) + volume 0
-                           (API) + pausa (API).
-                        */
-
-                        const volumeToken =
-                            await getToken();
-
-                        if (volumeToken) {
-
-                            await fetch(
-                                "https://api.spotify.com/v1/me/player/volume?device_id=" +
-                                encodeURIComponent(
-                                    spotifyDeviceId
-                                ), {
-
-                                    method: "PUT",
-
-                                    headers: {
-
-                                        Authorization: "Bearer " + volumeToken,
-
-                                        "Content-Type": "application/json"
-
-                                    },
-
-                                    body: JSON.stringify({
-                                        volume_percent: 0
-                                    })
-
-                                }
-                            );
-
-                        }
+                    if (pauseToken2) {
 
                         try {
-
-                            spotifyPlayer.setVolume(0);
-
-                        } catch {}
-
-                    } catch {}
-
-
-                    try {
-
-                        /*
-                           Pausa via fetch DIRETO
-                           (mesma correção v23.2:
-                           query param, corpo vazio).
-                        */
-
-                        const pauseToken =
-                            await getToken();
-
-                        if (pauseToken) {
 
                             await fetch(
                                 "https://api.spotify.com/v1/me/player/pause?device_id=" +
@@ -4927,16 +4856,67 @@
 
                                     headers: {
 
-                                        Authorization: "Bearer " + pauseToken
+                                        Authorization: "Bearer " + pauseToken2
 
                                     }
 
                                 }
                             );
 
-                        }
+                        } catch {}
+
+                    }
+
+
+                    try {
+
+                        await spotifyPlayer.nextTrack();
 
                     } catch {}
+
+
+                    /*
+                       Re-pausa logo após a troca
+                       (SDK + API) — a janela de som
+                       fica ~0.
+                    */
+
+                    try {
+
+                        spotifyPlayer.setVolume(0);
+
+                        spotifyPlayer.pause();
+
+                    } catch {}
+
+
+                    const pauseToken3 =
+                        await getToken();
+
+                    if (pauseToken3) {
+
+                        try {
+
+                            await fetch(
+                                "https://api.spotify.com/v1/me/player/pause?device_id=" +
+                                encodeURIComponent(
+                                    spotifyDeviceId
+                                ), {
+
+                                    method: "PUT",
+
+                                    headers: {
+
+                                        Authorization: "Bearer " + pauseToken3
+
+                                    }
+
+                                }
+                            );
+
+                        } catch {}
+
+                    }
 
                 }
 
