@@ -971,7 +971,7 @@
                     }) => {
 
                         console.log(
-                            "PLAYER AVA PRONTO (v21):",
+                            "PLAYER AVA PRONTO (v23.2):",
                             device_id
                         );
 
@@ -4853,29 +4853,88 @@
                     try {
 
                         /*
-                           CORREÇÃO (v23.1):
-                           /me/player/volume exige
-                           device_id na QUERY e
-                           volume_percent NO BODY.
+                           CORREÇÃO (v23.2):
+                           O PUT /volume via spotifyPUT
+                           seguia 400 (o corpo estava
+                           indo correto, mas o proxy do
+                           AVA/cached version podia
+                           alterar). Agora enviamos o
+                           fetch DIRETO e garantimos
+                           os dois controles:
+                           volume 0 (SDK) + volume 0
+                           (API) + pausa (API).
                         */
 
-                        await spotifyPUT(
-                            "/me/player/volume?device_id=" +
-                            encodeURIComponent(spotifyDeviceId),
-                            {
-                                volume_percent: 0
-                            }
-                        );
+                        const volumeToken =
+                            await getToken();
+
+                        if (volumeToken) {
+
+                            await fetch(
+                                "https://api.spotify.com/v1/me/player/volume?device_id=" +
+                                encodeURIComponent(
+                                    spotifyDeviceId
+                                ), {
+
+                                    method: "PUT",
+
+                                    headers: {
+
+                                        Authorization: "Bearer " + volumeToken,
+
+                                        "Content-Type": "application/json"
+
+                                    },
+
+                                    body: JSON.stringify({
+                                        volume_percent: 0
+                                    })
+
+                                }
+                            );
+
+                        }
+
+                        try {
+
+                            spotifyPlayer.setVolume(0);
+
+                        } catch {}
 
                     } catch {}
 
 
                     try {
 
-                        await spotifyPUT(
-                            "/me/player/pause?device_id=" +
-                            encodeURIComponent(spotifyDeviceId)
-                        );
+                        /*
+                           Pausa via fetch DIRETO
+                           (mesma correção v23.2:
+                           query param, corpo vazio).
+                        */
+
+                        const pauseToken =
+                            await getToken();
+
+                        if (pauseToken) {
+
+                            await fetch(
+                                "https://api.spotify.com/v1/me/player/pause?device_id=" +
+                                encodeURIComponent(
+                                    spotifyDeviceId
+                                ), {
+
+                                    method: "PUT",
+
+                                    headers: {
+
+                                        Authorization: "Bearer " + pauseToken
+
+                                    }
+
+                                }
+                            );
+
+                        }
 
                     } catch {}
 
