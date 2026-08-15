@@ -47,6 +47,32 @@
         let spotifyPlayer = null;
         let spotifyDeviceId = null;
 
+
+        /*
+           NOVIDADE (v21.5):
+           Tenta recuperar o device_id salvo de uma
+           sessão anterior (o usuário pediu pra
+           "salvar o 4Segredo pra não ter que colocar
+           toda vez").
+
+           O ID real do dispositivo deste navegador
+           só aparece quando o SDK dispara "ready",
+           mas guardar aqui garante que comandos que
+           dependem do ID não fiquem bloqueados
+           enquanto o SDK conecta — e se o player
+           reconectar, o ID salvo é atualizado.
+        */
+
+        try {
+
+            const saved =
+                localStorage.getItem("sp_device_id");
+
+            if (saved)
+                spotifyDeviceId = saved;
+
+        } catch {}
+
         let currentPlaylistId = null;
         let currentPlaylistName = null;
 
@@ -908,6 +934,30 @@
 
                         spotifyDeviceId =
                             device_id;
+
+                        /*
+                           NOVIDADE (v21.5):
+                           Salva o device_id no
+                           localStorage. Assim o
+                           player LEMBRA o dispositivo
+                           deste navegador entre
+                           sessões — comandos (seek,
+                           shuffle, descobrir faixas)
+                           não precisam esperar a
+                           reconexão toda vez, e o
+                           usuário não precisa
+                           reenviar o ID manualmente.
+                        */
+
+                        try {
+
+                            localStorage.setItem(
+                                "sp_device_id",
+                                device_id
+                            );
+
+                        } catch {}
+
 
                         document.getElementById(
                                 "sp-device"
@@ -4266,14 +4316,37 @@
                    atualizado mesmo sem áudio saindo.
                 */
 
-                const volumeBefore =
-                    spotifyPlayer._volume;
+                /*
+                   CORREÇÃO (v21.5):
+                   O SDK NÃO tem setPaused() — os
+                   métodos reais são:
+                   resume(), pause(), nextTrack(),
+                   setVolume(n), getCurrentState().
+                */
 
-                spotifyPlayer.setVolume(0);
+                let volumeBefore = null;
 
-                await spotifyPlayer.setPaused(
-                    false
-                );
+                try {
+
+                    const state =
+                        await spotifyPlayer
+                        .getCurrentState();
+
+                    if (state)
+                        volumeBefore = state.volume;
+
+                } catch {}
+
+
+                try {
+
+                    spotifyPlayer.setVolume(0);
+
+                } catch {
+
+                    /* SDK antigo sem setVolume */
+
+                }
 
 
                 const response =
@@ -4540,14 +4613,14 @@
 
 
                 /*
-                   3) Terminada a descoberta, restaura
-                   o volume anterior e pausa — não
-                   deixa música tocando.
+                   3) Terminada a descoberta, pausa
+                   (não deixa música tocando) e
+                   restaura o volume anterior.
                 */
 
                 try {
 
-                    spotifyPlayer.setPaused(true);
+                    spotifyPlayer.pause();
 
                 } catch (error) {
 
