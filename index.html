@@ -4725,14 +4725,36 @@
 
 
                     /*
-                       Só avança se ainda não chegou
-                       ao fim. nextTrack() no fim da
-                       fila volta ao início — por
-                       isso o limite de 200 e o break
-                       acima são a segurança.
+                       Avança pra próxima faixa.
+
+                       GARANTIA DE SILÊNCIO (v22.2):
+                       nextTrack() às vezes RESUME a
+                       reprodução sozinho (o Spotify
+                       reinicia o play após trocar de
+                       faixa). Por isso, logo em
+                       seguida, PAUSAMOS DE NOVO e
+                       zeramos o volume — a cada
+                       faixa, sem exceção. Assim o
+                       usuário não ouve NADA e o que
+                       ele estava ouvindo não é
+                       tocado por aqui.
                     */
 
                     await spotifyPlayer.nextTrack();
+
+
+                    try {
+
+                        spotifyPlayer.setVolume(0);
+
+                    } catch {}
+
+
+                    try {
+
+                        spotifyPlayer.pause();
+
+                    } catch {}
 
                 }
 
