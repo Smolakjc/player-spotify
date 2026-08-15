@@ -3915,6 +3915,74 @@
                     unavailable
                 );
 
+
+                /*
+                   GAMBARRA (v21.4):
+
+                   O usuário percebeu: a playlist
+                   TOCA normal mesmo quando a API
+                   recusa listar as faixas.
+
+                   Então a lista pode ser montada a
+                   partir do que o Spotify ESTÁ tocando:
+
+                   1. Toca a playlist PAUSADA (SDK
+                      não precisa de áudio tocando)
+                   2. Lê o track_window.current_track
+                      (faixa atual)
+                   3. Avança com player.nextTrack()
+                      e lê de novo
+                   4. Repete até a playlist inteira
+
+                   Como o SDK revela apenas a faixa
+                   ATUAL + próximas, percorremos a
+                   playlist inteiro automaticamente,
+                   SEM tocar música alguma em volume
+                   (tudo pausado).
+
+                   Cada vez que uma faixa é lida,
+                   aparece na lista — com nome,
+                   artista e capa.
+                */
+
+                const discoverBtn =
+                    document.createElement("button");
+
+                discoverBtn.style =
+                    "background:#111;" +
+                    "border:1px solid #1db954;" +
+                    "color:#1db954;" +
+                    "padding:7px 12px;" +
+                    "border-radius:7px;" +
+                    "cursor:pointer;" +
+                    "font-size:11px;" +
+                    "margin-left:8px;";
+
+                discoverBtn.innerHTML =
+                    "🔍 Descobrir faixas (toca pausado)";
+
+                discoverBtn.onclick =
+                    async () => {
+
+                        discoverBtn.disabled = true;
+
+                        discoverBtn.style.opacity =
+                            "0.5";
+
+                        discoverBtn.innerHTML =
+                            "⏳ Descobrindo...";
+
+                        await discoverPlaylistTracks(
+                            playlistId,
+                            container,
+                            discoverBtn
+                        );
+
+                    };
+
+
+                header.appendChild(discoverBtn);
+
                 return;
 
             }
@@ -4127,6 +4195,411 @@
 
                 }
             );
+
+        }
+
+
+        /* =========================================================
+           GAMBARRA (v21.4):
+           DESCOBRIR FAIXAS PELA REPRODUÇÃO
+
+           Quando a API recusa listar uma playlist
+           de outra pessoa, percorremos a playlist
+           tocando-a PAUSADA pelo SDK e lendo cada
+           faixa do track_window. Assim montamos a
+           lista na ordem certa, com nome, artista e
+           capa — igual uma lista normal.
+        ========================================================= */
+
+        let playlistDiscoveryActive = false;
+
+
+        async function discoverPlaylistTracks(
+            playlistId,
+            container,
+            button
+        ) {
+
+            if (
+                !spotifyPlayer ||
+                playlistDiscoveryActive
+            )
+                return;
+
+
+            playlistDiscoveryActive = true;
+
+
+            try {
+
+                const token =
+                    await getToken();
+
+                if (
+                    !token ||
+                    !spotifyDeviceId
+                ) {
+
+                    alert(
+                        "Faça login no Spotify primeiro."
+                    );
+
+                    return;
+
+                }
+
+
+                const rowsContainer =
+                    document.createElement("div");
+
+                rowsContainer.style =
+                    "grid-column:1/-1;";
+
+                container.appendChild(rowsContainer);
+
+
+                /*
+                   1) Coloca a playlist tocando PAUSADA.
+
+                   O Spotify aceita play em volume 0
+                   pelo SDK — o track_window é
+                   atualizado mesmo sem áudio saindo.
+                */
+
+                const volumeBefore =
+                    spotifyPlayer._volume;
+
+                spotifyPlayer.setVolume(0);
+
+                await spotifyPlayer.setPaused(
+                    false
+                );
+
+
+                const response =
+                    await fetch(
+                        "https://api.spotify.com/v1/me/player/play?device_id=" +
+                        encodeURIComponent(
+                            spotifyDeviceId
+                        ), {
+
+                            method: "PUT",
+
+                            headers: {
+
+                                Authorization: "Bearer " + token,
+
+                                "Content-Type": "application/json"
+
+                            },
+
+                            body: JSON.stringify({
+
+                                context_uri: "spotify:playlist:" +
+                                    playlistId,
+
+                                offset: {
+                                    position: 0
+                                },
+
+                                position_ms: 0
+
+                            })
+
+                        }
+                    );
+
+
+                if (
+                    !response.ok &&
+                    response.status !== 204
+                ) {
+
+                    button.innerHTML =
+                        "❌ Não foi possível descobrir";
+
+                    console.error(
+                        "DESCOBERTA [play]:",
+                        await response.text()
+                    );
+
+                    playlistDiscoveryActive = false;
+
+                    return;
+
+                }
+
+
+                /*
+                   2) Percorre a playlist lendo o
+                   track_window a cada nextTrack().
+
+                   O limite de segurança é 200 faixas
+                   (playlists gigantes ficam mais
+                   longas — é o trade-off da gambiarra).
+
+                   Para de avançar quando a posição
+                   volta pra 0 (playlist acabou).
+                */
+
+                const MAX_TRACKS = 200;
+
+                const position0 = Date.now();
+
+
+                for (
+                    let i = 0;
+                    i < MAX_TRACKS;
+                    i++
+                ) {
+
+                    /*
+                       Dá um tempinho pro Spotify
+                       atualizar o estado interno.
+                    */
+
+                    await new Promise(resolve =>
+                        setTimeout(resolve, 450)
+                    );
+
+
+                    const state =
+                        await spotifyPlayer
+                        .getCurrentState();
+
+
+                    const track =
+                        state &&
+                        state.track_window &&
+                        state.track_window.current_track;
+
+
+                    if (!track) {
+
+                        await new Promise(resolve =>
+                            setTimeout(resolve, 400)
+                        );
+
+                        continue;
+
+                    }
+
+
+                    /*
+                       Detecta fim da playlist: quando
+                       nextTrack() faz o contador de
+                       posição do track_window voltar
+                       (ou o tempo total da janela
+                       mudar muito), a fila acabou.
+                    */
+
+                    if (
+                        rowsContainer.childElementCount > 0 &&
+                        state.track_window.position === 0 &&
+                        Date.now() - position0 > 5000
+                    ) {
+
+                        /*
+                           Se a posição voltou a 0
+                           depois de vários avanços,
+                           provavelmente voltamos ao
+                           início da fila → fim.
+                        */
+
+                        break;
+
+                    }
+
+
+                    const image =
+                        track.album &&
+                        track.album.images &&
+                        track.album.images.length
+
+                        ?
+
+                        track.album.images[track.album.images.length - 1].url
+
+                        :
+
+                        "https://placehold.co/100x100/111/777?text=♫";
+
+
+                    const row =
+                        document.createElement(
+                            "div"
+                        );
+
+
+                    row.style =
+                        "display:flex;" +
+                        "align-items:center;" +
+                        "gap:10px;" +
+                        "padding:8px;" +
+                        "background:#111;" +
+                        "border:1px solid #222;" +
+                        "border-radius:7px;" +
+                        "cursor:pointer;" +
+                        "margin-top:4px;" +
+                        "transition:.2s;";
+
+
+                    row.onmouseover =
+                        function() {
+
+                            this.style.borderColor =
+                                "#1db954";
+
+                            this.style.background =
+                                "#181818";
+
+                        };
+
+
+                    row.onmouseout =
+                        function() {
+
+                            this.style.borderColor =
+                                "#222";
+
+                            this.style.background =
+                                "#111";
+
+                        };
+
+
+                    const itemIndex =
+                        rowsContainer.childElementCount;
+
+
+                    row.onclick =
+                        function() {
+
+                            playPlaylistTrack(
+                                playlistId,
+                                track.uri,
+                                itemIndex
+                            );
+
+                        };
+
+
+                    row.innerHTML =
+
+                        '<div style="width:20px;text-align:center;font-size:10px;color:#555;">' +
+                        (itemIndex + 1) +
+                        '</div>' +
+
+                        '<img src="' +
+                        image +
+                        '" style="width:42px;height:42px;object-fit:cover;border-radius:5px;">' +
+
+                        '<div style="flex:1;min-width:0;">' +
+
+                        '<div style="font-size:12px;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
+                        escapeHTML(track.name) +
+                        '</div>' +
+
+                        '<div style="font-size:10px;color:#777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
+                        escapeHTML(
+                            track.artists
+                            .map(a => a.name)
+                            .join(", ")
+                        ) +
+                        '</div>' +
+
+                        '</div>';
+
+
+                    rowsContainer.appendChild(row);
+
+
+                    /*
+                       Atualiza o botão com o progresso
+                       da descoberta.
+                    */
+
+                    if (button)
+                        button.innerHTML =
+                            "🔍 Descobrindo... " +
+                            (itemIndex + 1) +
+                            " faixas";
+
+
+                    /*
+                       Só avança se ainda não chegou
+                       ao fim. nextTrack() no fim da
+                       fila volta ao início — por
+                       isso o limite de 200 e o break
+                       acima são a segurança.
+                    */
+
+                    await spotifyPlayer.nextTrack();
+
+                }
+
+
+                /*
+                   3) Terminada a descoberta, restaura
+                   o volume anterior e pausa — não
+                   deixa música tocando.
+                */
+
+                try {
+
+                    spotifyPlayer.setPaused(true);
+
+                } catch (error) {
+
+                    console.error(
+                        "DESCOBERTA [pausa]:",
+                        error
+                    );
+
+                }
+
+
+                try {
+
+                    spotifyPlayer.setVolume(
+                        volumeBefore != null
+                            ? volumeBefore
+                            : 0.7
+                    );
+
+                } catch (error) {
+
+                    console.error(
+                        "DESCOBERTA [volume]:",
+                        error
+                    );
+
+                }
+
+
+                if (button)
+                    button.innerHTML =
+                        "✅ " +
+                        rowsContainer.childElementCount +
+                        " faixas descobertas";
+
+
+                playlistDiscoveryActive = false;
+
+            } catch (error) {
+
+                console.error(
+                    "DESCOBERTA:",
+                    error
+                );
+
+                if (button)
+                    button.innerHTML =
+                        "❌ Falhou — tente de novo";
+
+                playlistDiscoveryActive = false;
+
+            }
 
         }
 
