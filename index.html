@@ -4500,11 +4500,22 @@
                 /*
                    Garante que está PAUSADO durante
                    a descoberta (sem áudio saindo).
+
+                   CORREÇÃO (v22.3):
+                   O SDK falhava ("no list was loaded")
+                   porque o player estava entre
+                   contextos. A API REST (/me/player/
+                   pause) é mais confiável — pausa o
+                   dispositivo direto no servidor do
+                   Spotify.
                 */
 
                 try {
 
-                    spotifyPlayer.pause();
+                    await spotifyPUT(
+                        "/me/player/pause",
+                        { device_id: spotifyDeviceId }
+                    );
 
                 } catch {}
 
@@ -4743,16 +4754,37 @@
                     await spotifyPlayer.nextTrack();
 
 
+                    /*
+                       GARANTIA DE SILÊNCIO (v22.3):
+                       nextTrack() às vezes RESUME a
+                       reprodução sozinho. Os métodos
+                       do SDK falhavam ("no list was
+                       loaded"), então usamos a API
+                       REST que pausa o dispositivo
+                       direto no servidor:
+                       volume 0 + pause após CADA
+                       avanço, sem exceção.
+                    */
+
                     try {
 
-                        spotifyPlayer.setVolume(0);
+                        await spotifyPUT(
+                            "/me/player/volume",
+                            {
+                                volume_percent: 0,
+                                device_id: spotifyDeviceId
+                            }
+                        );
 
                     } catch {}
 
 
                     try {
 
-                        spotifyPlayer.pause();
+                        await spotifyPUT(
+                            "/me/player/pause",
+                            { device_id: spotifyDeviceId }
+                        );
 
                     } catch {}
 
@@ -4775,7 +4807,10 @@
 
                 try {
 
-                    spotifyPlayer.pause();
+                    await spotifyPUT(
+                        "/me/player/pause",
+                        { device_id: spotifyDeviceId }
+                    );
 
                 } catch {}
 
