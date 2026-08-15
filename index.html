@@ -4589,9 +4589,16 @@
 
                 try {
 
+                    /*
+                       CORREÇÃO (v23.1):
+                       A API exige device_id como
+                       QUERY PARAM (não no body).
+                       Body deve ir VAZIO no pause.
+                    */
+
                     await spotifyPUT(
-                        "/me/player/pause",
-                        { device_id: spotifyDeviceId }
+                        "/me/player/pause?device_id=" +
+                        encodeURIComponent(spotifyDeviceId)
                     );
 
                 } catch {}
@@ -4845,11 +4852,18 @@
 
                     try {
 
+                        /*
+                           CORREÇÃO (v23.1):
+                           /me/player/volume exige
+                           device_id na QUERY e
+                           volume_percent NO BODY.
+                        */
+
                         await spotifyPUT(
-                            "/me/player/volume",
+                            "/me/player/volume?device_id=" +
+                            encodeURIComponent(spotifyDeviceId),
                             {
-                                volume_percent: 0,
-                                device_id: spotifyDeviceId
+                                volume_percent: 0
                             }
                         );
 
@@ -4859,8 +4873,8 @@
                     try {
 
                         await spotifyPUT(
-                            "/me/player/pause",
-                            { device_id: spotifyDeviceId }
+                            "/me/player/pause?device_id=" +
+                            encodeURIComponent(spotifyDeviceId)
                         );
 
                     } catch {}
@@ -4885,8 +4899,8 @@
                 try {
 
                     await spotifyPUT(
-                        "/me/player/pause",
-                        { device_id: spotifyDeviceId }
+                        "/me/player/pause?device_id=" +
+                        encodeURIComponent(spotifyDeviceId)
                     );
 
                 } catch {}
