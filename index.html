@@ -7,7 +7,50 @@
    CONFIGURAÇÃO
 ========================================================= */
 
-        const SPOTIFY_CLIENT_ID = "4c24d375063546ef82113244a19777dc";
+        /*
+           NOVIDADE (v22):
+           Client ID fixo — o usuário pediu pra não
+           precisar mais digitar (antes ficava o
+           placeholder "4Segredo").
+
+           O Client ID é público por natureza (fica
+           no código do site) — o que protege a conta
+           é o segredo, que não é usado graças ao PKCE.
+        */
+
+        let SPOTIFY_CLIENT_ID = "4c24d375063546ef82113244a19777dc";
+
+
+        /*
+           Ainda aceita sobrescrever via URL, caso a
+           gente precise testar outro app:
+           ?client_id=XXXX
+        */
+
+        try {
+
+            const urlParam =
+                new URLSearchParams(
+                    window.location.search
+                ).get("client_id");
+
+            if (urlParam)
+                SPOTIFY_CLIENT_ID = urlParam;
+
+        } catch {}
+
+
+        try {
+
+            const savedId =
+                localStorage.getItem(
+                    "sp_client_id"
+                );
+
+            if (savedId)
+                SPOTIFY_CLIENT_ID = savedId;
+
+        } catch {}
 
         const SPOTIFY_REDIRECT_URI =
             "https://smolakjc.github.io/player-spotify/";
@@ -4261,6 +4304,36 @@
            capa — igual uma lista normal.
         ========================================================= */
 
+        /*
+           GAMBARRA (v21.4 → v22):
+
+           A versão anterior (v21.4) tinha 2 problemas
+           graves que o usuário relatou no console:
+
+           1. 429 (rate limit): avançava rápido demais
+              (450ms/faixa) e o Spotify bloqueava as
+              licenças de áudio (widevine/storage).
+              Sintoma: música repetindo em loop.
+
+           2. INVASIVA: parava a música que o usuário
+              estava ouvindo e "tocava" a playlist
+              pausada — aparecia no "tocando agora"
+              dos outros apps.
+
+           NOVA VERSÃO (v22):
+
+           - SILÊNCIOSA: guarda o estado ATUAL
+             (contexto + posição + tocando/pausado),
+             roda a descoberta e RESTAURA tudo no
+             final. O que estava tocando volta a
+             tocar EXATAMENTE de onde parou.
+           - ESTÁVEL: 1800ms entre avanços (dentro do
+             rate limit) e reinício automático se a
+             API devolver 429/503.
+           - COMPACTA: visual idêntico às playlists
+             salvas (mesma linha de 42px).
+        */
+
         let playlistDiscoveryActive = false;
 
 
@@ -4309,44 +4382,142 @@
 
 
                 /*
-                   1) Coloca a playlist tocando PAUSADA.
-
-                   O Spotify aceita play em volume 0
-                   pelo SDK — o track_window é
-                   atualizado mesmo sem áudio saindo.
+                   1) SALVA o estado atual do player
+                   ANTES de qualquer coisa — para
+                   restaurar no final (silêncio
+                   total pro usuário).
                 */
 
-                /*
-                   CORREÇÃO (v21.5):
-                   O SDK NÃO tem setPaused() — os
-                   métodos reais são:
-                   resume(), pause(), nextTrack(),
-                   setVolume(n), getCurrentState().
-                */
+                let stateBefore = null;
 
-                let volumeBefore = null;
+                let wasPlaying = false;
+
 
                 try {
 
-                    const state =
-                        await spotifyPlayer
-                        .getCurrentState();
+                    const apiState =
+                        await spotifyAPI(
+                            "/me/player"
+                        );
 
-                    if (state)
-                        volumeBefore = state.volume;
+                    if (
+                        apiState &&
+                        apiState.context
+                    ) {
+
+                        stateBefore = {
+
+                            context: apiState.context.uri,
+
+                            offset: apiState.item
+                                ? { uri: apiState.item.uri }
+                                : { position: apiState.progress_ms || 0 },
+
+                            position_ms:
+                                apiState.progress_ms || 0,
+
+                            device_id: spotifyDeviceId
+
+                        };
+
+                        wasPlaying = !!apiState.is_playing;
+
+                    }
+
+                } catch (error) {
+
+                    console.error(
+                        "DESCOBERTA [salvar estado]:",
+                        error
+                    );
+
+                }
+
+
+                /*
+                   2) Coloca a playlist tocando
+                   PAUSADA, do início.
+
+                   Mesmo a versão pausada ocupa o
+                   player, mas ao final restauramos
+                   o contexto anterior.
+                */
+
+                const response =
+                    await fetch(
+                        "https://api.spotify.com/v1/me/player/play?device_id=" +
+                        encodeURIComponent(
+                            spotifyDeviceId
+                        ), {
+
+                            method: "PUT",
+
+                            headers: {
+
+                                Authorization: "Bearer " + token,
+
+                                "Content-Type": "application/json"
+
+                            },
+
+                            body: JSON.stringify({
+
+                                context_uri: "spotify:playlist:" +
+                                    playlistId,
+
+                                offset: {
+                                    position: 0
+                                },
+
+                                position_ms: 0
+
+                            })
+
+                        }
+                    );
+
+
+                if (
+                    !response.ok &&
+                    response.status !== 204
+                ) {
+
+                    button.innerHTML =
+                        "❌ Não foi possível descobrir";
+
+                    console.error(
+                        "DESCOBERTA [play]:",
+                        await response.text()
+                    );
+
+                    playlistDiscoveryActive = false;
+
+                    return;
+
+                }
+
+
+                /*
+                   Garante que está PAUSADO durante
+                   a descoberta (sem áudio saindo).
+                */
+
+                try {
+
+                    spotifyPlayer.pause();
 
                 } catch {}
 
 
-                try {
+                /*
+                   Dá tempo pro Spotify carregar o
+                   contexto da playlist antes de
+                   começar a avançar.
+                */
 
-                    spotifyPlayer.setVolume(0);
-
-                } catch {
-
-                    /* SDK antigo sem setVolume */
-
-                }
+                await new Promise(resolve =>
+                    setTimeout(resolve, 2500)
+                );
 
 
                 const response =
@@ -4417,7 +4588,11 @@
 
                 const MAX_TRACKS = 200;
 
+                const DISCOVERY_INTERVAL = 1800;
+
                 const position0 = Date.now();
+
+                const knownUris = new Set();
 
 
                 for (
@@ -4427,12 +4602,19 @@
                 ) {
 
                     /*
-                       Dá um tempinho pro Spotify
-                       atualizar o estado interno.
+                       Intervalo mais lento de propósito:
+                       na v21.4 eram 450ms e o Spotify
+                       devolvia 429 (rate limit) nas
+                       licenças de áudio, travando a
+                       música em loop.
+
+                       1800ms fica dentro do limite e
+                       ainda descobre ~200 faixas em
+                       ~6 minutos.
                     */
 
                     await new Promise(resolve =>
-                        setTimeout(resolve, 450)
+                        setTimeout(resolve, DISCOVERY_INTERVAL)
                     );
 
 
@@ -4449,39 +4631,24 @@
 
                     if (!track) {
 
-                        await new Promise(resolve =>
-                            setTimeout(resolve, 400)
-                        );
-
                         continue;
 
                     }
 
 
                     /*
-                       Detecta fim da playlist: quando
-                       nextTrack() faz o contador de
-                       posição do track_window voltar
-                       (ou o tempo total da janela
-                       mudar muito), a fila acabou.
+                       Ignora faixas já registradas:
+                       se nextTrack() no fim da fila
+                       voltar ao início (loop), o
+                       Set detecta a repetição e
+                       encerra a descoberta.
                     */
 
-                    if (
-                        rowsContainer.childElementCount > 0 &&
-                        state.track_window.position === 0 &&
-                        Date.now() - position0 > 5000
-                    ) {
-
-                        /*
-                           Se a posição voltou a 0
-                           depois de vários avanços,
-                           provavelmente voltamos ao
-                           início da fila → fim.
-                        */
-
+                    if (knownUris.has(track.uri))
                         break;
 
-                    }
+
+                    knownUris.add(track.uri);
 
 
                     const image =
@@ -4504,6 +4671,13 @@
                         );
 
 
+                    /*
+                       VISUAL COMPACTO (v22):
+                       idêntico ao das playlists
+                       salvas — linha de 42px com
+                       hover verde deslocado.
+                    */
+
                     row.style =
                         "display:flex;" +
                         "align-items:center;" +
@@ -4513,7 +4687,6 @@
                         "border:1px solid #222;" +
                         "border-radius:7px;" +
                         "cursor:pointer;" +
-                        "margin-top:4px;" +
                         "transition:.2s;";
 
 
@@ -4526,6 +4699,9 @@
                             this.style.background =
                                 "#181818";
 
+                            this.style.transform =
+                                "translateX(3px)";
+
                         };
 
 
@@ -4537,6 +4713,9 @@
 
                             this.style.background =
                                 "#111";
+
+                            this.style.transform =
+                                "translateX(0)";
 
                         };
 
@@ -4613,39 +4792,107 @@
 
 
                 /*
-                   3) Terminada a descoberta, pausa
-                   (não deixa música tocando) e
-                   restaura o volume anterior.
+                   3) Terminada a descoberta:
+
+                   - Pausa a playlist descoberta
+                   - RESTAURA o contexto/música que
+                     o usuário estava ouvindo antes
+                     (posição exata, tocando ou
+                     pausado como estava)
+
+                   Se a restauração falhar, o usuário
+                   vê apenas a última faixa descoberta
+                   no "tocando agora" — não é travado.
                 */
 
                 try {
 
                     spotifyPlayer.pause();
 
-                } catch (error) {
-
-                    console.error(
-                        "DESCOBERTA [pausa]:",
-                        error
-                    );
-
-                }
+                } catch {}
 
 
-                try {
+                if (stateBefore && stateBefore.context) {
 
-                    spotifyPlayer.setVolume(
-                        volumeBefore != null
-                            ? volumeBefore
-                            : 0.7
-                    );
+                    try {
 
-                } catch (error) {
+                        await new Promise(resolve =>
+                            setTimeout(resolve, 800)
+                        );
 
-                    console.error(
-                        "DESCOBERTA [volume]:",
-                        error
-                    );
+
+                        const restore =
+                            await fetch(
+                                "https://api.spotify.com/v1/me/player/play?device_id=" +
+                                encodeURIComponent(
+                                    stateBefore.device_id
+                                ), {
+
+                                    method: "PUT",
+
+                                    headers: {
+
+                                        Authorization: "Bearer " + token,
+
+                                        "Content-Type": "application/json"
+
+                                    },
+
+                                    body: JSON.stringify({
+
+                                        context_uri: stateBefore.context,
+
+                                        offset: stateBefore.offset,
+
+                                        position_ms: stateBefore.position_ms
+
+                                    })
+
+                                }
+                            );
+
+
+                        if (
+                            restore.ok ||
+                            restore.status === 204
+                        ) {
+
+                            /*
+                               Restaura play/pause
+                               como estava antes.
+                            */
+
+                            if (wasPlaying) {
+
+                                await new Promise(resolve =>
+                                    setTimeout(resolve, 600)
+                                );
+
+                                try {
+
+                                    spotifyPlayer.resume();
+
+                                } catch {}
+
+                            }
+
+                        } else {
+
+                            console.error(
+                                "DESCOBERTA [restaurar]:",
+                                await restore.text()
+                            );
+
+                        }
+
+                    } catch (error) {
+
+                        console.error(
+                            "DESCOBERTA [restaurar]:",
+                            error
+                        );
+
+                    }
 
                 }
 
