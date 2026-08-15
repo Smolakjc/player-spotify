@@ -4520,71 +4520,17 @@
                 );
 
 
-                const response =
-                    await fetch(
-                        "https://api.spotify.com/v1/me/player/play?device_id=" +
-                        encodeURIComponent(
-                            spotifyDeviceId
-                        ), {
-
-                            method: "PUT",
-
-                            headers: {
-
-                                Authorization: "Bearer " + token,
-
-                                "Content-Type": "application/json"
-
-                            },
-
-                            body: JSON.stringify({
-
-                                context_uri: "spotify:playlist:" +
-                                    playlistId,
-
-                                offset: {
-                                    position: 0
-                                },
-
-                                position_ms: 0
-
-                            })
-
-                        }
-                    );
-
-
-                if (
-                    !response.ok &&
-                    response.status !== 204
-                ) {
-
-                    button.innerHTML =
-                        "❌ Não foi possível descobrir";
-
-                    console.error(
-                        "DESCOBERTA [play]:",
-                        await response.text()
-                    );
-
-                    playlistDiscoveryActive = false;
-
-                    return;
-
-                }
-
-
                 /*
-                   2) Percorre a playlist lendo o
+                   Percorre a playlist lendo o
                    track_window a cada nextTrack().
 
                    O limite de segurança é 200 faixas
                    (playlists gigantes ficam mais
                    longas — é o trade-off da gambiarra).
 
-                   Para de avançar quando a posição
-                   volta pra 0 (playlist acabou).
-                */
+                   Para de avançar quando uma faixa
+                   repetida é detectada (loop).
+                   */
 
                 const MAX_TRACKS = 200;
 
